@@ -1,0 +1,16 @@
+# 项目级委派偏好覆盖（Project Overrides）
+
+> 路径：`<project_root>/.agents/delegation/overrides.md`
+> 优先级高于用户级配置与 Skill 默认规程；与项目根目录 `AGENTS.md` / `CLAUDE.md` 联动生效。
+
+## 项目验收命令
+<!-- 示例：
+- 定点单测：`pytest tests/unit/test_xxx.py -q`
+- 全量测试（耗时较长，交由轻量 subagent 监控）：`npm test`
+-->
+
+## 范围与禁区
+<!-- 示例：
+- 子代理禁止修改 `migrations/`、`package-lock.json` 与生产配置。
+- 涉及核心计费模块 `src/billing/` 的改动需升级至 `sonnet-agy` 或由主会话审查。
+-->

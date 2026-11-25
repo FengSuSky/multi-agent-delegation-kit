@@ -1,0 +1,17 @@
+# 用户级委派偏好覆盖（User Overrides）
+
+> 路径：`~/.config/multi-agent-delegation/overrides.md`
+> 优先级：项目级配置（`<repo>/.agents/delegation/overrides.md`、`AGENTS.md`） > 本文件 > 全局核心 MD（`~/.gemini/AGENTS.md`、`~/.claude/CLAUDE.md`） > Skill 默认规程。
+> 本文件在 Skill 升级时**不会被覆盖**，可放心记录你的个人渠道状态与路由习惯。
+
+## 渠道与配额备注（按需取消注释或修改）
+<!-- 示例：
+- Cursor `grok-4.7-medium-fast` 当前无额度，暂不启用。
+- 本机未配置 Claude Code，所有实现类子任务直接走 AGY `hydrogen` 或原生 `flash` subagent。
+-->
+
+## 自定义路由与预算偏好
+<!-- 示例：
+- 单次 Claude Code 子任务预算上限不超过 `$0.50`。
+- 文档类任务默认直接由主会话处理，不委派外部 CLI。
+-->

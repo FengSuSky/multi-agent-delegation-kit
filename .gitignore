@@ -1,0 +1,21 @@
+# macOS / OS
+.DS_Store
+._*
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary & backup files
+*.bak
+*.bak.*
+*.tmp
+*.log
+.trees/
+
+# Local secrets / env
+.env
+.env.*

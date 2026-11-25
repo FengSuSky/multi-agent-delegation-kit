@@ -108,47 +108,59 @@ if [[ -n "$INIT_PROJECT_DIR" ]]; then
   fi
 fi
 
-# 4. Optional idempotent rule injection
+# 4. Optional idempotent rule injection (supports safe migration of legacy unmarked sections)
 inject_block() {
   local target_file="$1"
   local snippet_file="$2"
   local begin_marker="<!-- BEGIN multi-agent-delegation -->"
   local end_marker="<!-- END multi-agent-delegation -->"
 
-  if [[ "$DRY_RUN" == "1" ]]; then
-    echo "  [DRY-RUN] idempotently upsert ${snippet_file} into ${target_file}"
-    return 0
+  if [[ "$DRY_RUN" != "1" ]]; then
+    mkdir -p "$(dirname "$target_file")"
+    if [[ -f "$target_file" ]]; then
+      local ts
+      ts="$(date +%Y%m%d%H%M%S)"
+      cp "$target_file" "${target_file}.bak.${ts}"
+      echo "  [BACKUP] ${target_file}.bak.${ts}"
+    else
+      touch "$target_file"
+    fi
   fi
 
-  mkdir -p "$(dirname "$target_file")"
-  if [[ -f "$target_file" ]]; then
-    local ts
-    ts="$(date +%Y%m%d%H%M%S)"
-    cp "$target_file" "${target_file}.bak.${ts}"
-    echo "  [BACKUP] ${target_file}.bak.${ts}"
-  else
-    touch "$target_file"
-  fi
+  python3 - "$target_file" "$snippet_file" "$begin_marker" "$end_marker" "$DRY_RUN" <<'PY'
+import os, re, sys
 
-  python3 - "$target_file" "$snippet_file" "$begin_marker" "$end_marker" <<'PY'
-import re, sys
-
-target_path, snippet_path, begin_m, end_m = sys.argv[1:5]
-content = open(target_path, encoding="utf-8").read()
+target_path, snippet_path, begin_m, end_m, dry_run = sys.argv[1:6]
+is_dry = dry_run == "1"
+content = open(target_path, encoding="utf-8").read() if os.path.isfile(target_path) else ""
 snippet = open(snippet_path, encoding="utf-8").read().strip()
 block = f"{begin_m}\n{snippet}\n{end_m}\n"
 
-pattern = re.compile(re.escape(begin_m) + r".*?" + re.escape(end_m) + r"\n?", re.S)
-if pattern.search(content):
-    new_content = pattern.sub(block, content, count=1)
+marker_pat = re.compile(re.escape(begin_m) + r".*?" + re.escape(end_m) + r"\n?", re.S)
+legacy_pat = re.compile(
+    r"(?m)^###\s+(?:[0-9.]+\s+)?(?:默认多 Agent 协作与委派|模型分工与委派)[^\n]*\n(?:(?!^#{1,3}\s).*\n?)*"
+)
+
+if marker_pat.search(content):
+    action = "UPDATE (marker block)"
+    new_content = marker_pat.sub(block, content, count=1)
+elif legacy_pat.search(content):
+    action = "MIGRATE (replace legacy unmarked section in-place to avoid duplicates)"
+    new_content = legacy_pat.sub(block, content, count=1)
 else:
+    action = "APPEND (new marker block)"
     sep = "" if (not content or content.endswith("\n\n")) else ("\n" if content.endswith("\n") else "\n\n")
     new_content = content + sep + block
 
-with open(target_path, "w", encoding="utf-8") as f:
-    f.write(new_content)
+if is_dry:
+    print(f"  [DRY-RUN] {action} -> {target_path}")
+else:
+    with open(target_path, "w", encoding="utf-8") as f:
+        f.write(new_content)
+    print(f"  [DONE]    {action} -> {target_path}")
+    if action.startswith("MIGRATE"):
+        print("            Tip: move any personal quota/channel notes from the .bak file into ~/.config/multi-agent-delegation/overrides.md")
 PY
-  echo "  [DONE] Updated ${target_file}"
 }
 
 echo ""

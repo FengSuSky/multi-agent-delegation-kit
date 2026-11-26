@@ -38,6 +38,18 @@ case "${STUB_CLAUDE_MODE:-ok}" in
     echo "Error: Input must be provided either through stdin or as a prompt argument when using --print" >&2
     exit 1
     ;;
+  quota_429)
+    printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"result":"API Error: Request rejected (429) · [1308][已达到 5 小时的使用上限]"}'
+    exit 1
+    ;;
+  permission_denied)
+    printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"permission_denials":[{"tool_name":"Bash"}],"result":"Error: Tool Bash permission denied"}'
+    exit 1
+    ;;
+  max_budget)
+    printf '%s\n' '{"type":"result","subtype":"error_max_budget_usd","is_error":true,"result":"Exceeded max budget"}'
+    exit 1
+    ;;
   no_output)
     exit 0
     ;;

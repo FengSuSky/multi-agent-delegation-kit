@@ -413,4 +413,54 @@ assert_eq "the cancelled script exits with the status of the signal" "143" "${CA
 assert_eq "no fallback is started for a run the orchestrator cancelled" "0" "$(call_count agy)"
 assert_eq "the pid file goes with it" "" "$(ls "${OUT}.pid" 2>/dev/null)"
 
+echo "fallback error classification"
+it "falls back to fast when the primary channel hits a quota or rate-limit error"
+: > "$USER_CFG_FILE"
+export STUB_CLAUDE_MODE=quota_429
+run_delegate --role coder --fallback fast
+unset STUB_CLAUDE_MODE
+assert_eq "exit status" "0" "$RUN_RC"
+assert_eq "agy fallback ran once" "1" "$(call_count agy)"
+assert_contains "the output comes from the fallback channel" "done by agy" "$(cat "${OUT}")"
+
+it "stops without fallback when a tool permission is denied"
+: > "$USER_CFG_FILE"
+export STUB_CLAUDE_MODE=permission_denied
+run_delegate --role coder --fallback fast
+unset STUB_CLAUDE_MODE
+assert_eq "exit status" "1" "$RUN_RC"
+assert_eq "agy fallback is never launched" "0" "$(call_count agy)"
+assert_eq "report status" "failed" "$(report status)"
+assert_contains "log explains why fallback stopped" "stopping without fallback" "$(run_log)"
+
+it "stops without fallback when headless agy auto-denies a permission"
+: > "$USER_CFG_FILE"
+export STUB_AGY_MODE=headless
+run_delegate --role fast --fallback scout
+unset STUB_AGY_MODE
+assert_eq "exit status" "1" "$RUN_RC"
+assert_eq "agy was only called once without falling back to scout" "1" "$(call_count agy)"
+assert_eq "report status" "failed" "$(report status)"
+assert_contains "log explains why fallback stopped" "stopping without fallback" "$(run_log)"
+
+it "stops without fallback on non-channel CLI errors"
+: > "$USER_CFG_FILE"
+export STUB_CLAUDE_MODE=warn_then_fail
+run_delegate --role coder --fallback fast
+unset STUB_CLAUDE_MODE
+assert_eq "exit status" "1" "$RUN_RC"
+assert_eq "agy fallback is never launched" "0" "$(call_count agy)"
+assert_eq "report status" "failed" "$(report status)"
+assert_contains "log explains why fallback stopped" "stopping without fallback" "$(run_log)"
+
+it "stops without fallback when max budget is exceeded"
+: > "$USER_CFG_FILE"
+export STUB_CLAUDE_MODE=max_budget
+run_delegate --role coder --fallback fast
+unset STUB_CLAUDE_MODE
+assert_eq "exit status" "1" "$RUN_RC"
+assert_eq "agy fallback is never launched" "0" "$(call_count agy)"
+assert_eq "report status" "failed" "$(report status)"
+assert_contains "log explains why fallback stopped" "stopping without fallback" "$(run_log)"
+
 finish

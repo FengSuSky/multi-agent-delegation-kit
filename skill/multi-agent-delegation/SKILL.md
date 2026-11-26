@@ -89,7 +89,7 @@ description: >-
 
 ## 2. 配额耗尽与自动降级链（Fallback）
 
-当某个渠道出现**额度耗尽、限流（429/402）、余额不足、认证失败、服务不可用，或被 `DELEGATE_DISABLED_HARNESSES` / `DELEGATE_DISABLED_PRESETS` 禁用**时，平滑降级不中断任务：
+当某个渠道出现**额度耗尽、限流（429/402）、余额不足、认证失败、模型/服务不可用、网络连接失败，或被 `DELEGATE_DISABLED_HARNESSES` / `DELEGATE_DISABLED_PRESETS` 禁用**时，平滑降级不中断任务；若遇到**权限拒绝（`auto-denied` / `permission_denials`）、CLI 参数错误、预算/轮次上限等非模型调用类错误**，脚本会立即停止并输出失败报告，不会静默切到兜底角色：
 
 1. **角色降级链**（按顺序逐个尝试，直到某个通道成功）：
    - `heavy`（失败或无额度）→ `coder` → **`fast`**（默认兜底角色，可在 `config.env` 通过 `DELEGATE_DEFAULT_FALLBACK` 自定义）

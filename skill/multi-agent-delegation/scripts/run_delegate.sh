@@ -722,7 +722,10 @@ ${prompt}"
   esac
 }
 
-# -> prints why a finished attempt must not be trusted (status 0), or returns 1 when the result is acceptable
+# -> prints why a finished attempt failed and returns:
+#    0 when the failure is a channel/model/quota/auth/network issue (eligible for fallback)
+#    1 when the result is acceptable (no error)
+#    2 when the failure is a permission/config/budget/non-channel issue (stop without fallback)
 result_problem() { # <exit code> <out path> <stderr log>
   local rc="$1"
   local out_path="$2"
@@ -737,6 +740,16 @@ quota_pat = re.compile(
     r"(quota|rate.?limit|insufficient|balance|credit|429|402|overloaded|exhausted|usage.?limit|billing|unauthorized)",
     re.I,
 )
+channel_err_pat = re.compile(
+    r"(quota|rate.?limit|usage.?limit|insufficient|balance|credit|billing|exhausted|\b429\b|\b402\b|"
+    r"已达到.*上限|限额|余额不足|配额|"
+    r"unauthorized|invalid.?api.?key|authentication|\b401\b|\b403\b|"
+    r"overloaded|service.?unavailable|bad.?gateway|gateway.?timeout|\b502\b|\b503\b|\b504\b|\b529\b|"
+    r"invalid model|model is not recognized|model.*not (?:found|available|supported)|unknown model|"
+    r"API Error:|connection refused|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|network error|timed out|fetch failed)",
+    re.I,
+)
+perm_pat = re.compile(r"(permission denied|requires? .*permission|approval required|not allowed)", re.I)
 headless_pat = re.compile(r"no output produced|headless mode cannot prompt|auto-denied", re.I)
 time_pat = re.compile(r"^(real|user|sys)\s.*$", re.M)
 error_pat = re.compile(r"^(error|fatal|panic)\b", re.I)
@@ -795,10 +808,29 @@ if not problem and quota_pat.search(result_text) and len(result_text) < 600:
 if not problem and quota_pat.search(err_text):
     problem = "quota or API error on stderr: " + squeeze(err_text[-300:])
 
-if problem:
-    print(problem)
-    sys.exit(0)
-sys.exit(3)  # acceptable: distinct from 1 so a crash of this checker is never read as success
+if not problem:
+    sys.exit(3)  # acceptable: distinct from 1 so a crash of this checker is never read as success
+
+print(problem)
+if preflight:
+    sys.exit(0)  # preflight failure: channel unreachable, allow fallback
+
+combined_text = " ".join(part for part in (detail, result_text, err_text, raw if data is None else "") if part)
+is_non_fallback = (
+    int(rc) == 2
+    or (data is not None and bool(data.get("permission_denials")))
+    or (data is not None and str(data.get("subtype", "")) in {"error_max_budget_usd", "error_max_turns"})
+    or bool(headless_pat.search(combined_text))
+    or bool(perm_pat.search(combined_text))
+)
+if is_non_fallback:
+    sys.exit(4)  # permission/config/budget failure: stop without fallback
+
+has_api_error_field = data is not None and (bool(data.get("api_error")) or bool(data.get("api_error_status")))
+if has_api_error_field or channel_err_pat.search(combined_text):
+    sys.exit(0)  # quota/model/auth/network failure: allow fallback
+
+sys.exit(4)  # unclassified non-channel failure: stop without fallback
 PY
 )" || checker_rc=$?
   case "$checker_rc" in
@@ -809,9 +841,13 @@ PY
     3)
       return 1
       ;;
+    4)
+      printf '%s' "$problem"
+      return 2
+      ;;
     *)
       printf 'could not inspect the result (checker exit code %s)' "$checker_rc"
-      return 0
+      return 2
       ;;
   esac
 }
@@ -879,11 +915,11 @@ for candidate in "${ENABLED[@]}"; do
   RESUME_ID=""
   cat "$ERR_LOG" >&2 || true
 
-  # A non-zero status means the result is acceptable; otherwise the function printed the reason.
-  if ! PROBLEM="$(result_problem "$LAST_RC" "$ABS_OUT" "$ERR_LOG")"; then
-    PROBLEM=""
-  fi
-  if [[ -z "$PROBLEM" ]]; then
+  # Exit status 1 means the result is acceptable; 0 means fallbackable error; 2 means non-fallback error.
+  PROBLEM=""
+  PROBLEM_RC=0
+  PROBLEM="$(result_problem "$LAST_RC" "$ABS_OUT" "$ERR_LOG")" || PROBLEM_RC=$?
+  if [[ "$PROBLEM_RC" -eq 1 ]]; then
     SUCCEEDED=1
     break
   fi
@@ -892,6 +928,10 @@ for candidate in "${ENABLED[@]}"; do
     note="; saved its raw output to ${ABS_OUT%.json}.failed-${candidate}.json"
   fi
   ATTEMPT_FIELDS+=("$candidate" "$RES_HARNESS" "$RES_MODEL" "$LAST_RC" "$PROBLEM")
+  if [[ "$PROBLEM_RC" -eq 2 ]]; then
+    echo "[FALLBACK] Target '${candidate}' (${RES_HARNESS}:${RES_MODEL}) failed with a non-fallback error; stopping without fallback: ${PROBLEM}${note}" >&2
+    break
+  fi
   echo "[FALLBACK] Target '${candidate}' (${RES_HARNESS}:${RES_MODEL}) failed: ${PROBLEM}${note}" >&2
 done
 

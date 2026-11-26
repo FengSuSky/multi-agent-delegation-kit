@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Fake agy CLI for tests: logs one line per call, records the last argv, then behaves as $STUB_AGY_MODE.
+# The first $STUB_AGY_FAIL_CALLS calls fail the way agy does when it cannot validate the model.
+printf '%s\n' "${*//$'\n'/⏎}" >> "${STUB_LOG_DIR:?}/agy.calls"
+printf '%s\n' "$@" > "${STUB_LOG_DIR}/agy.argv"
+
+if [[ "$(wc -l < "${STUB_LOG_DIR}/agy.calls" | tr -d ' ')" -le "${STUB_AGY_FAIL_CALLS:-0}" ]]; then
+  echo 'error: invalid model selection: model is not recognized as a known model or custom model in settings' >&2
+  exit 1
+fi
+
+# $STUB_AGY_SLEEP holds the run open so a test can watch the heartbeat.
+[[ -z "${STUB_AGY_SLEEP:-}" ]] || sleep "${STUB_AGY_SLEEP}"
+
+case "${STUB_AGY_MODE:-ok}" in
+  ok)
+    printf '%s\n' '{"conversation_id":"stub-conv","status":"SUCCESS","response":"done by agy"}'
+    ;;
+  headless)
+    # What agy -p prints when a tool needs a permission headless mode cannot grant.
+    printf '%s\n' 'jetski: no output produced — a tool required the "command" permission that headless mode cannot prompt for, so it was auto-denied. Add an allow-rule under permissions.allow in settings.json (e.g. command(<target>)).'
+    ;;
+  *)
+    echo "stub agy: unknown STUB_AGY_MODE=${STUB_AGY_MODE}" >&2
+    exit 99
+    ;;
+esac

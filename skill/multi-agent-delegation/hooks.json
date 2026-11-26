@@ -1,0 +1,17 @@
+{
+  "multi-agent-delegation-guard": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "invoke_subagent|run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.agents/skills/multi-agent-delegation/scripts/guard_subagent.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

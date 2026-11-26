@@ -1,6 +1,11 @@
 ### 默认多 Agent 协作与委派（自动生效）
-- **主会话零噪音原则（Clean Main Session）**：主会话只保留**与用户交互、当前计划与决策、追踪 subagent 进展、最终结果对齐**；不要在主会话直接执行会产生大量 tool calls 或长输出的操作（如 `npm test`、全量构建、大范围检索、长日志排查、多轮试错）——这些过程与中间结果全部留在 subagent 上下文或落盘日志中，只向主会话回传 5–10 行结构化结果摘要。
+- **主会话零噪音原则（Clean Main Session）**：主会话只保留**与用户交互、当前计划与决策、追踪 subagent 进展、最终结果对齐**；不要在主会话直接执行会产生大量 tool calls 或长输出的操作（如 `npm test`、全量构建、大范围检索、长日志排查、多轮试错）——这些过程与中间结果全部留在 subagent 上下文或落盘日志中，只向主会话回传 5–10 行结构化结果摘要。**主会话同样不为「实现」去通读源码**：需要了解代码时，让 scout 返回「文件 + 行号范围」的代码地图，只读验收 diff 真正需要的最小范围。
 - **默认分工（按角色路由）**：检索/摘要/**全量测试与构建监控/大日志分析**（`scout`）、细微杂活与中小型改动（`fast`）、常规/多文件代码实现与带测试闭环修 Bug（`coder`），**默认主动加载并执行 `multi-agent-delegation` Skill**（或主会话原生轻量 subagent）下沉执行，无需用户每次显式提醒。
+- **原生 `invoke_subagent` 与跨 Harness `run_delegate.sh` 的硬边界（不混用）**：
+  - **需要写简报的任务一律走 `coder`**（多文件实现、新增多个测试、带测试闭环修 Bug、要读代码找接缝）：加载 `multi-agent-delegation` Skill，通过 `run_delegate.sh --role coder` 派发给配置里绑定的 coder 通道，保护主订阅额度。**不要因为 `Model="flash"` 便宜就把这类任务写成原生子代理**——换成 `flash` 只是换了档位，活仍在 AGY 里，也没有 coder 的测试闭环。
+  - **只读检索 / 摘要 / 大日志分析（`scout`）与 `fast` 级小活**：优先原生 `invoke_subagent`。只读任务显式指定 `TypeName="research"` 与 `Model="flash_lite"`（纯检索）或 `Model="flash"`；`fast` 级小活（一两个文件、不需要先读代码定位、一轮改完自验）可用 `TypeName="self"` 加 `Model="flash"`，守卫为 `deny` 时会被拦截、改走 `coder`。
+  - **不要用 `invoke_subagent(Model="inherit")` 派子任务**（即使 tool schema 的默认值是 `inherit` 也不沿用）：守卫 Hook 会按 `DELEGATE_INHERIT_SUBAGENT` 把它改写成轻量档，或直接拦截。
 - **分层配置优先**：执行委派前按 `项目级 (.agents/delegation/) > 用户级 (~/.config/multi-agent-delegation/) > 核心 MD > Skill 默认值` 读取角色绑定与偏好覆盖，适配用户本机实际的订阅组合（如 AGY / Claude Code + 智谱 GLM / DeepSeek / Cursor）。
 - **例外与升级**：仅极小单点改动（数行以内、无探索成本）由主会话直接完成；`coder` 连续 2–3 轮自修仍不绿时熔断升级 `heavy`；高风险架构或复杂权衡先由主会话提炼高密度上下文，再主动建议调用 `architect`（只读 Plan 模式）联合决策。
-- **配额降级与会话复用**：若某外部渠道额度耗尽或报错，自动降级到兜底角色（默认 `fast`）并在本会话内熔断故障通道；同主题/同模块多轮任务优先复用已有 subagent（`send_message`）或 CLI `--resume <id>`，避免反复新建会话。
+- **配额降级与会话复用**：若某外部渠道额度耗尽或报错，自动降级到兜底角色（默认 `fast`）并在本会话内熔断故障通道；同主题/同模块多轮任务优先复用已有 subagent（`send_message`）或 CLI `--resume <id>`，避免反复新建会话。`run_delegate.sh` 失败时输出是一份 `status: "failed"` 的 JSON 报告，按其中的 `attempts[].reason` 与 `next` 处理（守卫策略允许时改用原生子代理，`deny` 下由主会话接手），不要原地重跑同一条命令。
+- **等待被委派的任务**：`run_delegate.sh` 的输出文件只在结束时写入，运行期间是 0 字节、`git status` 没变化都属正常。多文件任务可能跑十几分钟，开头几分钟往往只有读取和检索；`NotificationTimeoutSeconds` 设 900 以上。收到通知后用 `bash ~/.agents/skills/multi-agent-delegation/scripts/run_delegate.sh --progress <out.json>` 查进度（进程是否还在、已用时、工具调用次数和最近一次调用）；**仍显示 `running` 且没有 `status: "failed"` 报告，就不要 kill 后自己接手**。真要接手，先确认它不再显示 `running`。

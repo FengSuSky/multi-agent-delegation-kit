@@ -10,6 +10,7 @@ Install or upgrade the portable multi-agent-delegation skill while preserving us
 Options:
   --skill-only          Install/upgrade ~/.agents/skills/multi-agent-delegation and init user config if missing (default)
   --with-rules          Also idempotently inject delegation rules into ~/.gemini/AGENTS.md and ~/.claude/CLAUDE.md
+  --with-hooks          Also install the AGY PreToolUse guard hook into ~/.gemini/config/hooks.json (backs up, keeps other hooks)
   --profile <name>      Initialize user config from a built-in profile (agy-cursor-zhipu | claude-deepseek-glm | agy-only)
   --init-project <dir>  Also scaffold <dir>/.agents/delegation/{config.env,overrides.md} if missing
   --dry-run             Preview all actions without modifying any files
@@ -18,6 +19,7 @@ EOF
 }
 
 WITH_RULES="0"
+WITH_HOOKS="0"
 DRY_RUN="0"
 PROFILE_NAME=""
 INIT_PROJECT_DIR=""
@@ -26,6 +28,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --skill-only) WITH_RULES="0"; shift 1 ;;
     --with-rules) WITH_RULES="1"; shift 1 ;;
+    --with-hooks) WITH_HOOKS="1"; shift 1 ;;
     --profile) PROFILE_NAME="$2"; shift 2 ;;
     --init-project) INIT_PROJECT_DIR="$2"; shift 2 ;;
     --dry-run) DRY_RUN="1"; shift 1 ;;
@@ -40,6 +43,7 @@ SKILL_DST="${HOME}/.agents/skills/multi-agent-delegation"
 USER_CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/multi-agent-delegation"
 AGENTS_RULE_DST="${HOME}/.gemini/AGENTS.md"
 CLAUDE_RULE_DST="${HOME}/.claude/CLAUDE.md"
+AGY_HOOKS_DST="${HOME}/.gemini/config/hooks.json"
 
 if [[ -n "$PROFILE_NAME" && ! -f "${SKILL_SRC}/profiles/${PROFILE_NAME}.env" ]]; then
   echo "Error: unknown profile '${PROFILE_NAME}'. Available profiles:" >&2
@@ -170,6 +174,55 @@ if [[ "$WITH_RULES" == "1" ]]; then
   inject_block "$CLAUDE_RULE_DST" "${KIT_DIR}/rules/CLAUDE-snippet.md"
 else
   echo "==> Step 4: Skipped global rule injection (run with --with-rules to enable auto-trigger by default)"
+fi
+
+# 5. Optional idempotent hook installation. The hook keeps its long-standing name so an entry that
+#    was added by hand earlier is upgraded in place instead of duplicated.
+echo ""
+if [[ "$WITH_HOOKS" == "1" ]]; then
+  echo "==> Step 5: Install AGY PreToolUse guard hook -> ${AGY_HOOKS_DST}"
+  python3 -I - "${SKILL_SRC}/hooks.json" "${AGY_HOOKS_DST}" "${DRY_RUN}" <<'PY'
+import json
+import os
+import shutil
+import sys
+import time
+
+template_path, target_path, dry_run = sys.argv[1:4]
+with open(template_path, encoding="utf-8") as f:
+    desired = json.load(f)
+name = next(iter(desired))
+
+existing = {}
+if os.path.isfile(target_path):
+    try:
+        with open(target_path, encoding="utf-8") as f:
+            existing = json.load(f)
+    except ValueError:
+        sys.exit(f"Error: {target_path} is not valid JSON; fix or move it aside before installing the hook.")
+    if not isinstance(existing, dict):
+        sys.exit(f"Error: {target_path} must hold a JSON object of named hooks.")
+
+if existing.get(name) == desired[name]:
+    print(f"  [KEEP]    hook '{name}' in {target_path} is already up to date")
+elif dry_run == "1":
+    print(f"  [DRY-RUN] {'UPDATE' if name in existing else 'INSTALL'} hook '{name}' -> {target_path}")
+else:
+    if os.path.isfile(target_path):
+        backup = f"{target_path}.bak.{time.strftime('%Y%m%d%H%M%S')}"
+        shutil.copy2(target_path, backup)
+        print(f"  [BACKUP]  {backup}")
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    existing[name] = desired[name]
+    with open(target_path, "w", encoding="utf-8") as f:
+        json.dump(existing, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    print(f"  [DONE]    {'UPDATE' if name in existing else 'INSTALL'} hook '{name}' -> {target_path}")
+    print("            Its policy is read from the kit config: DELEGATE_INHERIT_SUBAGENT (rewrite | deny | allow),")
+    print("            DELEGATE_INHERIT_REWRITE_MODEL and DELEGATE_AUTO_ALLOW_DELEGATE (0 | 1).")
+PY
+else
+  echo "==> Step 5: Skipped AGY hook installation (run with --with-hooks to enforce routing by mechanism)"
 fi
 
 echo ""

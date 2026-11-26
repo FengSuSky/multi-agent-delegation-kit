@@ -123,7 +123,8 @@ if [[ ! -d "$TARGET_DIR" ]]; then
 fi
 ABS_TARGET="$(cd "$TARGET_DIR" && pwd)"
 
-python3 - "$MODE" "$ABS_TARGET" "$USER_CFG_DIR" <<'PY'
+# -I keeps Python from importing a same-named module from an untrusted directory the resolver runs in.
+python3 -I - "$MODE" "$ABS_TARGET" "$USER_CFG_DIR" <<'PY'
 import json
 import re
 import shlex
@@ -180,6 +181,19 @@ DEFAULTS = {
     "DELEGATE_DEFAULT_EFFORT": "high",
     "DELEGATE_DEFAULT_MAX_BUDGET": "1.00",
     "DELEGATE_DEFAULT_TIMEOUT": "300s",
+    # Preflight: seconds to wait for the endpoint (0 disables); optional command that brings a
+    # loopback proxy or tunnel back when it is down.
+    "DELEGATE_PREFLIGHT_TIMEOUT": "5",
+    "DELEGATE_PROXY_ENSURE_CMD": "",
+    # Seconds between progress lines while a delegated harness runs; 0 turns them off.
+    "DELEGATE_HEARTBEAT_INTERVAL": "30",
+    # AGY PreToolUse hook (scripts/guard_subagent.py): what happens to a subagent that would run
+    # on the primary model (rewrite | deny | allow; deny also refuses every `self` worker whatever
+    # its Model), the tier it is rewritten to, and whether a canonical run_delegate.sh command may
+    # run without a permission prompt.
+    "DELEGATE_INHERIT_SUBAGENT": "rewrite",
+    "DELEGATE_INHERIT_REWRITE_MODEL": "flash",
+    "DELEGATE_AUTO_ALLOW_DELEGATE": "0",
     "DELEGATE_SCRATCH_DIR": str(home / "work" / "agy-scratch"),
     "DELEGATE_DISABLED_HARNESSES": "",
     "DELEGATE_DISABLED_PRESETS": "",
@@ -194,6 +208,15 @@ DEFAULTS = {
 }
 
 KEY_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
+# A comment only starts at a `#` that follows whitespace; a bare `#` belongs to the value.
+INLINE_COMMENT_RE = re.compile(r"\s+#.*$")
+
+def strip_inline_comment(val: str) -> str:
+    """Drop a trailing ` # comment`, leaving a quoted value untouched."""
+    if val[:1] in ("'", '"'):
+        closing = val.find(val[0], 1)
+        return val if closing == -1 else val[:closing + 1]
+    return INLINE_COMMENT_RE.sub("", val).rstrip()
 
 def safe_is_file(path: Path) -> bool:
     try:
@@ -224,7 +247,7 @@ def parse_env_file(path: Path) -> dict:
         m = KEY_RE.match(line)
         if not m:
             continue
-        key, val = m.group(1), m.group(2).strip()
+        key, val = m.group(1), strip_inline_comment(m.group(2).strip())
         if key not in DEFAULTS:
             continue
         if len(val) >= 2 and ((val[0] == val[-1] == '"') or (val[0] == val[-1] == "'")):
@@ -308,6 +331,12 @@ for k in [
     "DELEGATE_DEFAULT_EFFORT",
     "DELEGATE_DEFAULT_MAX_BUDGET",
     "DELEGATE_DEFAULT_TIMEOUT",
+    "DELEGATE_PREFLIGHT_TIMEOUT",
+    "DELEGATE_PROXY_ENSURE_CMD",
+    "DELEGATE_HEARTBEAT_INTERVAL",
+    "DELEGATE_INHERIT_SUBAGENT",
+    "DELEGATE_INHERIT_REWRITE_MODEL",
+    "DELEGATE_AUTO_ALLOW_DELEGATE",
     "DELEGATE_SCRATCH_DIR",
     "DELEGATE_DISABLED_HARNESSES",
     "DELEGATE_DISABLED_PRESETS",

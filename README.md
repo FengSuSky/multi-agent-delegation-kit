@@ -3,6 +3,8 @@
 > 一套面向**多订阅开发者（尤其是国内多 Coding Plan 用户）**、兼顾**高质量与低成本**的通用多 Agent 分层协作框架与可安装 Skill 套件。
 >
 > **核心理念**：不绑定单一厂商，而是把不同 **模型（成本/推理能力）× Harness（工具链/自验闭环）** 映射到 **5 个通用角色（`scout` / `fast` / `coder` / `heavy` / `architect`）**——用便宜快的组合干体力活、用强 Harness + 高性价比模型做主力实现、2–3 轮不绿自动熔断升级旗舰、渠道不可用自动降级。
+>
+> 路由不只写在规程里：**AGY 守卫 Hook** 用机制让主模型留在编排位置；委派脚本**先预检网络**、运行期间输出**进度心跳**（`--progress` 随时可查），失败时给出**结构化报告**并沿**多级回退链**重试。
 
 ---
 
@@ -39,18 +41,20 @@ git clone https://github.com/FengSuSky/multi-agent-delegation-kit.git
 cd multi-agent-delegation-kit
 
 # 1. 预览安装动作（不落盘）
-bash ./install.sh --with-rules --profile agy-cursor-zhipu --dry-run
+bash ./install.sh --with-rules --with-hooks --profile agy-cursor-zhipu --dry-run
 
 # 2. 按你的订阅组合一键安装（可选 profile：agy-cursor-zhipu | claude-deepseek-glm | agy-only）
-bash ./install.sh --with-rules --profile agy-cursor-zhipu
+#    --with-hooks 安装 AGY 守卫 Hook（不用 AGY 主会话时去掉即可）
+bash ./install.sh --with-rules --with-hooks --profile agy-cursor-zhipu
 
-# 若只想安装 Skill 与用户配置、不想修改你的全局 AGENTS.md / CLAUDE.md：
+# 若只想安装 Skill 与用户配置、不想修改你的全局 AGENTS.md / CLAUDE.md / hooks.json：
 bash ./install.sh --skill-only --profile claude-deepseek-glm
 ```
 
-> **安全升级**：拉取最新代码后运行 `git pull && bash ./install.sh --skill-only`（或 `--with-rules`）即可幂等升级。
+> **安全升级**：拉取最新代码后运行 `git pull && bash ./install.sh --with-rules --with-hooks`（或 `--skill-only`）即可幂等升级。
 > - `install.sh` **绝不会覆盖**你的 `~/.config/multi-agent-delegation/{config.env,overrides.md}`；
-> - 规则注入使用 `<!-- BEGIN/END multi-agent-delegation -->` 标记块幂等更新，修改前自动生成 `.bak.<timestamp>` 备份。
+> - 规则注入使用 `<!-- BEGIN/END multi-agent-delegation -->` 标记块幂等更新，修改前自动生成 `.bak.<timestamp>` 备份；
+> - `--with-hooks` 只改动 `~/.gemini/config/hooks.json` 里名为 `multi-agent-delegation-guard` 的条目（其它 hook 原样保留，旧的同名条目原地升级），修改前同样备份；该文件不是合法 JSON 时会拒绝改写。
 
 ---
 
@@ -90,7 +94,24 @@ bash ~/.agents/skills/multi-agent-delegation/scripts/load_config.sh --init-proje
 
 > **安全保证**：
 > - `config.env` 采用白名单 `KEY=VALUE` 解析（不执行 `source` / `eval`），克隆陌生仓库也不会触发命令注入；
-> - `*_API_KEY_ENV` 只填环境变量名（如 `DEEPSEEK_API_KEY`），绝不在配置文件中存放明文密钥。
+> - `*_API_KEY_ENV` 只填环境变量名（如 `DEEPSEEK_API_KEY`），绝不在配置文件中存放明文密钥；
+> - 行内注释需要在 `#` 前留空白；`none` / `0` 表示关闭对应限制（例如 `DELEGATE_DEFAULT_MAX_BUDGET=none`）。
+
+### AGY 守卫 Hook：用机制落实路由
+
+文字约定挡不住「主模型顺手自己把活干了」。`install.sh --with-hooks` 会装一个 AGY PreToolUse hook（`guard_subagent.py`），全部策略在 `config.env` 里配置：
+
+| 配置项 | 取值 | 作用 |
+| :--- | :--- | :--- |
+| `DELEGATE_INHERIT_SUBAGENT` | `rewrite`（默认）/ `deny` / `allow` | `invoke_subagent(Model="inherit")` 即「让子代理跑在主模型上」时：自动改写成轻量档 / 拦截并引导到 coder 通道 / 不干预。`deny` 还会拦下 `self` 子代理（不论 `Model`，`flash` 也算），只放行只读 `research` 子代理的轻量档 |
+| `DELEGATE_INHERIT_REWRITE_MODEL` | `flash`（默认）/ `flash_lite` | 被改写到的原生子代理档位 |
+| `DELEGATE_AUTO_ALLOW_DELEGATE` | `0`（默认）/ `1` | `1` 时规范形式的 `run_delegate.sh` 命令免权限弹窗、绕过沙箱 |
+
+Prompt 里带 `[allow-inherit]` 可以放行单次调用。Hook 出错时一律回答 `ask`（回到 AGY 默认权限流程），不会因崩溃而放行或拦截。
+
+> 只按 `Model` 拦不住写码任务：守卫把 `inherit` 改写成 `flash` 之后，主会话会把多文件编码任务直接写成 `Model="flash"` 派出去，所以 `deny` 连 `self` 类型一起拦。
+
+> `DELEGATE_AUTO_ALLOW_DELEGATE=1` 是一项长期授权：被委派的 Claude Code 可以在 `--dir` 内改文件、执行配置里的测试命令。Hook 只放行已知角色、不带自定义 `--test-cmd`、三个路径都在工作区（或 scratch 目录）内、不含 shell 元字符的命令；其余照常走 AGY 权限流程。
 
 ---
 
@@ -99,9 +120,10 @@ bash ~/.agents/skills/multi-agent-delegation/scripts/load_config.sh --init-proje
 ```text
 multi-agent-delegation-kit/
 ├── README.md                          # 本说明（定位、安装、Profile、配置分层与双向演进）
-├── install.sh                         # 一键幂等安装/升级脚本（支持 --profile，保留用户配置）
+├── install.sh                         # 一键幂等安装/升级脚本（支持 --profile / --with-hooks，保留用户配置）
 ├── scripts/
 │   └── sync_from_local.py             # 本机核心 MD 与已装 Skill 反哺套件的差异巡检与脱敏同步工具
+├── tests/                             # bash + Python 测试（bash tests/run_tests.sh）
 ├── docs/
 │   └── architecture-and-benchmarks.md # 架构原理、强模型×弱Harness 互补分析与实测基准
 ├── rules/
@@ -110,13 +132,15 @@ multi-agent-delegation-kit/
 └── skill/
     └── multi-agent-delegation/        # 可直接安装至 ~/.agents/skills/ 的标准 Skill 包
         ├── SKILL.md                   # 配置加载、5 角色路由表、降级链、多轮复用、5 步执行流与安全红线
+        ├── hooks.json                 # AGY 守卫 Hook 模板（--with-hooks 合并进 ~/.gemini/config/hooks.json）
         ├── profiles/                  # 内置订阅组合（agy-cursor-zhipu / claude-deepseek-glm / agy-only）
         ├── templates/                 # 用户级 / 项目级 config.env 与 overrides.md 模板
         ├── references/
-        │   └── delegation-best-practices.md  # 实测对照数据、CLI 参数踩坑与五段式简报模板
+        │   └── delegation-best-practices.md  # 实测对照数据、真实项目用量画像、CLI 参数踩坑与五段式简报模板
         └── scripts/
+            ├── guard_subagent.py      # AGY PreToolUse hook：inherit 子代理按策略改写/拦截（deny 连 self 子代理一起拦），规范委派命令可免弹窗
             ├── load_config.sh         # 分层配置解析、Profile 切换、本地核心 MD 发现与模板初始化
-            └── run_delegate.sh        # 跨 Harness 委派脚本（支持 --role / --preset / 多端点 / 自动降级 / --resume）
+            └── run_delegate.sh        # 跨 Harness 委派脚本（预检、--role / --preset、多端点、多级回退、进度心跳、失败报告、--resume）
 ```
 
 ---
@@ -144,9 +168,10 @@ multi-agent-delegation-kit/
 
 当你（Agent）收到用户要求「按本 README 安装」时，请依次执行：
 1. **环境探测**：运行 `which agy claude agent || true` 告知用户本机已就绪的 Harness，并根据用户订阅推荐对应 Profile（`agy-cursor-zhipu` / `claude-deepseek-glm` / `agy-only`）。
-2. **预览安装**：运行 `bash "<kit_dir>/install.sh" --with-rules --profile <chosen> --dry-run`。
-3. **执行安装**：运行 `bash "<kit_dir>/install.sh" --with-rules --profile <chosen>`（或 `--skill-only`）。
+2. **预览安装**：运行 `bash "<kit_dir>/install.sh" --with-rules --with-hooks --profile <chosen> --dry-run"`（本机没有 AGY 时去掉 `--with-hooks`）。
+3. **执行安装**：运行 `bash "<kit_dir>/install.sh" --with-rules --with-hooks --profile <chosen>"`（或 `--skill-only`）。
 4. **安装验收**：
    - 运行 `bash ~/.agents/skills/multi-agent-delegation/scripts/load_config.sh --show`；
    - 运行 `bash ~/.agents/skills/multi-agent-delegation/scripts/run_delegate.sh --role coder --resolve-only` 确认角色解析正确；
-   - 引导用户按需微调 `~/.config/multi-agent-delegation/{config.env,overrides.md}`，提示开启新会话即可生效。
+   - 引导用户按需微调 `~/.config/multi-agent-delegation/{config.env,overrides.md}`，提示开启新会话即可生效（AGY 的规则与 Hook 只对新开的会话生效）。
+5. **改动套件后**：运行 `bash tests/run_tests.sh`，全部通过再安装。

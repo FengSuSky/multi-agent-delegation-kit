@@ -30,8 +30,15 @@
 | **L3 异构互审** | 跨模型家族互审（GLM→Neon；Hydrogen/Neon→GLM/Sonnet） | `opus-5-5` / *(其他异构模型按额度启用)* | 关键 PR 安全与边界审计、设计方案挑刺 | 只读审查 |
 
 ### 降级链与多轮复用
-- **配额耗尽自动降级**：`sonnet-*` → `glm` → **`hydrogen`**（`run_delegate.sh` 默认 `--fallback hydrogen`）。极端情况下外部渠道全无额度，本会话熔断故障渠道、全员走 **AGY Hydrogen**（或内置 `invoke_subagent`）兜底。
+- **配额耗尽自动降级**：`run_delegate.sh` 沿回退链逐个通道重试（默认 `--fallback fast`，可写成 `fast,scout` 这样的多级链），启动前先预检网络路径；全部失败时输出一份结构化报告，列出每个通道的失败原因和下一步，而不是把原因留在 stderr。极端情况下外部渠道全无额度，本会话熔断故障渠道、全员走 **AGY Hydrogen**（或内置 `invoke_subagent`）兜底；守卫为 `deny` 时原生子代理会被拦截，失败报告改为让主会话接手。
 - **多轮上下文复用**：同模块/同主题后续返工优先复用已有会话——AGY 原生 subagent 用 `send_message(Recipient=conversationId)`；外部 CLI 用 `--keep-session` + `--resume <session_id>` 复用前缀缓存。
+
+### 机制保障：守卫 Hook 与预检
+规程写得再清楚，主模型仍会顺手把实现做了。一次真实项目的复盘中，约 41% 的主模型生成花在「亲自实现」和「用 `inherit` 派实现子代理」上（数据见 Skill 的 `references/delegation-best-practices.md` 第 5 节）。所以路由不能只靠文字约定：
+- **守卫 Hook**（`guard_subagent.py`，AGY PreToolUse）：`invoke_subagent(Model="inherit")` 默认被自动改写为 `flash`，可切换为拦截（把写码任务逼到 coder 通道）或不干预。拦截时 `self` 子代理不论 `Model` 都会被拦下——只看 `Model` 的话，主会话把编码任务写成 `Model="flash"` 就绕过去了。
+- **预检**：委派脚本先确认端点可达、本机代理在监听；坏掉的网络路径几秒内失败，而不是让 CLI 空转几分钟。
+- **进度心跳**：输出文件只在结束时写入，运行期间脚本每隔一段时间向 stderr 报一行已用时、工具调用次数和最近一次调用，编排方据此区分「还在干活」和「挂死」。
+- **失败报告**：输出文件始终是合法 JSON，列出每个尝试过的通道、失败原因和下一步。
 
 ---
 
@@ -62,7 +69,7 @@
 
 ### 2. AGY (`agy`)
 - `-p` 必须放在命令最后；工作目录必须在 `$HOME` 下（`/tmp` 写文件会被拒）；务必带 `--print-timeout` 防网络抖动挂起。
-- 善用官方原语：**日常轻量任务/兜底优先内置 `invoke_subagent`（`flash` + `share` 工作区）**，批量扇出流水线用 `run_workflow`，单点硬 bug 用 `/boost`，多文件并发用 `/swarm`，纯 AGY 复杂任务可试 `gemini-pro-orchestrator-neon`。
+- 善用官方原语：**日常轻量任务/兜底优先内置 `invoke_subagent`（`flash` + `share` 工作区；守卫为 `deny` 时 `self` 子代理会被拦截）**，批量扇出流水线用 `run_workflow`，单点硬 bug 用 `/boost`，多文件并发用 `/swarm`，纯 AGY 复杂任务可试 `gemini-pro-orchestrator-neon`。
 - **合规红线**：`agy -p` 仅限单用户在人工发起的当前工作流中按需调用，严禁 24/7 无人值守挂机循环。
 
 ### 3. Cursor Agent CLI (`agent`)

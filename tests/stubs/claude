@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Fake Claude Code CLI for tests: logs one line per call, records the last argv and proxy env,
+# then behaves as $STUB_CLAUDE_MODE.
+printf '%s\n' "${*//$'\n'/⏎}" >> "${STUB_LOG_DIR:?}/claude.calls"
+printf '%s\n' "$@" > "${STUB_LOG_DIR}/claude.argv"
+env | grep -i -E '^(https?_proxy|all_proxy|no_proxy)=' | sort > "${STUB_LOG_DIR}/claude.proxyenv" || true
+# The real CLI reads its prompt from stdin under -p; record what actually arrived there.
+cat > "${STUB_LOG_DIR}/claude.stdin"
+
+case "${STUB_CLAUDE_MODE:-ok}" in
+  ok)
+    # What `claude -p --output-format stream-json --verbose` prints: init, one assistant event per
+    # tool call with the user's tool result after it, and a single result event last.
+    printf '%s\n' '{"type":"system","subtype":"init","session_id":"stub-session","model":"stub"}'
+    printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"src/app.py"}}]},"session_id":"stub-session"}'
+    printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"1: print(1)"}]},"session_id":"stub-session"}'
+    # $STUB_CLAUDE_SLEEP holds the run open between tool calls so a test can watch the heartbeat.
+    [[ -z "${STUB_CLAUDE_SLEEP:-}" ]] || sleep "${STUB_CLAUDE_SLEEP}"
+    printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Edit","input":{"file_path":"src/app.py"}}]},"session_id":"stub-session"}'
+    printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":"ok"}]},"session_id":"stub-session"}'
+    printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"done by claude","session_id":"stub-session"}'
+    ;;
+  api_err)
+    printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"api_error":"connection_failed","result":"API Error: Connection refused"}'
+    exit 1
+    ;;
+  error_json)
+    # An API failure that Claude Code reports in-band while still exiting 0.
+    printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"result":"API Error: Connection refused"}'
+    ;;
+  raw_fail)
+    echo "error: boom" >&2
+    exit 1
+    ;;
+  warn_then_fail)
+    # The real CLI's stderr: a harmless connector warning first, the error that matters last.
+    echo "⚠ claude.ai connectors are disabled because another auth source is set" >&2
+    echo "Error: Input must be provided either through stdin or as a prompt argument when using --print" >&2
+    exit 1
+    ;;
+  no_output)
+    exit 0
+    ;;
+  *)
+    echo "stub claude: unknown STUB_CLAUDE_MODE=${STUB_CLAUDE_MODE}" >&2
+    exit 99
+    ;;
+esac

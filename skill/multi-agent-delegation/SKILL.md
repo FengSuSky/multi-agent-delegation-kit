@@ -4,8 +4,10 @@ description: >-
   Orchestrate cost-effective, high-quality multi-agent software development by routing
   subtasks by universal roles (scout, fast, coder, heavy, architect) across heterogeneous
   harnesses (AGY, Claude Code with GLM/DeepSeek/Kimi/MiniMax endpoints, Cursor) with
-  user/project layered config, automatic fallback, and session reuse. Use when delegating
-  implementation, parallel subtasks, codebase research, test monitoring, or cross-model review.
+  user/project layered config, an AGY guard hook that keeps the primary model orchestrating,
+  preflight checks, multi-hop fallback with structured failure reports, progress heartbeats, and session reuse.
+  Use when delegating implementation, parallel subtasks, codebase research, test monitoring,
+  or cross-model review.
 ---
 
 # 多 Agent 异构委派工作流（角色路由 × 多 Harness）
@@ -41,6 +43,11 @@ description: >-
   bash ~/.agents/skills/multi-agent-delegation/scripts/load_config.sh --use-profile claude-deepseek-glm --force
   ```
 - **脚本自动生效**：`run_delegate.sh` 安全解析 `config.env`（不执行任意 shell 代码），自动应用角色绑定（`harness:model`）、Claude 多国产端点（`*_BASE_URL` / `*_API_KEY_ENV`）、禁用 Harness/角色自动分流与默认参数。
+- **配置写法**：`config.env` 支持行内注释，但 `#` 前必须留空白（`KEY=value  # 说明`）；`none` / `0` 表示不设对应限制（如 `DELEGATE_DEFAULT_MAX_BUDGET=none`）。
+- **AGY 守卫 Hook（用机制落实路由，而不只靠文字约定）**：`bash install.sh --with-hooks` 把 `guard_subagent.py` 装进 `~/.gemini/config/hooks.json`，对 `invoke_subagent` 与 `run_command` 生效：
+  - `Model="inherit"`（让子代理跑在主模型上）默认被**自动改写**为 `flash`（`DELEGATE_INHERIT_SUBAGENT=rewrite`）；`allow` 关闭。Prompt 里带 `[allow-inherit]` 可放行。
+  - `deny` 用来把写码任务逼到 coder 通道：`self` 子代理**不论 `Model`**（`flash` / `flash_lite` 也算）连同所有 `inherit` / `pro` 调用一律拦截，只有只读的 `research` 子代理还能跑在 `flash` / `flash_lite` 上。只按 `Model` 拦不住——实测把 `inherit` 改写成 `flash` 之后，主会话会把多文件编码任务直接写成 `Model="flash"` 派出去。
+  - `DELEGATE_AUTO_ALLOW_DELEGATE=1` 时，规范形式的 `run_delegate.sh` 命令不再弹权限、不再被沙箱拦截（默认关闭，授权范围见第 5 节）。
 
 ---
 
@@ -54,6 +61,8 @@ description: >-
   - 跨文件/大范围代码库检索、大文件通读、批量分支与日志盘点；
   - 多轮编码试错、报错堆栈排查与中间产物查看。
 - **只对齐结果，细节留在 subagent**：中间日志与过程保留在 subagent 上下文（需要追问细节时用 `send_message` 或 `--resume` 续问原 subagent）或写入报告文件；主会话仅接收 **5–10 行结构化回执**（状态、通过/失败数、改动点、失败定位或报告路径）。
+- **主会话也不为「实现」去通读源码**：需要了解代码时，让 scout / research 返回「文件 + 行号范围」的代码地图（不超过 40 行），主会话只读验收 diff 真正需要的最小范围。实测一个 AGY 主会话 75% 的上下文来自它自己的 `read_file`，而子代理回执合计不到一成——上下文是被「自己读文件」撑爆的，不是被回执。
+- **一个阶段一个会话**：一轮实现合并后新开会话，用主会话写的交接文档衔接；上下文超过约 15 万 token 就 `/compact` 或新开。
 
 ---
 
@@ -61,8 +70,8 @@ description: >-
 
 | 任务类型 | 通用角色 (`--role`) | 能力画像与典型组合示例 |
 | :--- | :--- | :--- |
-| 检索、摘要、全量测试/评测监控、大日志分析、结构化抽取 | `scout`（或原生 `flash` subagent） | 极快、极便宜、隔离大输出只回 5–10 行摘要（如 AGY Hydrogen-low / DeepSeek-Chat） |
-| 细微杂活、补单测、中小型确定性改动 | `fast` | 低成本 + 终端可自验（如 AGY Hydrogen / DeepSeek-Chat） |
+| 检索、摘要、全量测试/评测监控、大日志分析、结构化抽取 | `scout`（或原生 `flash_lite` subagent） | 极快、极便宜、隔离大输出只回 5–10 行摘要（AGY 内用 `invoke_subagent(TypeName="research", Model="flash_lite")`，需要推理时用 `flash`；脚本通道为 AGY Hydrogen-low / DeepSeek-Chat） |
+| 细微杂活、补单个单测、中小型确定性改动 | `fast`（或原生 `flash` subagent） | 低成本 + 终端可自验。**`fast` 级的判定标准：一两个文件、不需要先读代码定位、一轮就能改完自验**，超出任一条就是 `coder`。AGY 内用 `invoke_subagent(TypeName="self", Model="flash", Workspace="share")`（守卫为 `deny` 时会被拦截，改走 `coder`）；脚本通道为 AGY Hydrogen / DeepSeek-Chat |
 | 常规/多文件代码实现、带测试闭环的 Bug 修复 | `coder` | 强 Harness（Claude Code）× 高性价比模型（智谱 GLM / Kimi / DeepSeek / MiniMax 等） |
 | `coder` 连续 2–3 轮自修仍不绿（熔断升级） | `heavy` | 稀缺旗舰编程模型攻坚（Sonnet / GLM-5.4 / Cursor 等） |
 | 高风险架构、棘手权衡（只读联合决策） | `architect` | 最强推理旗舰 + 只读 Plan 模式（Opus / Neon 等），由主会话先提炼高密度上下文 |
@@ -71,7 +80,9 @@ description: >-
 > 注：
 > - 细小单点改动由主会话直接完成，避免委派固定开销。
 > - 旧版 `--preset`（`hydrogen-low` / `hydrogen` / `glm` / `glm-opus` / `sonnet-agy` / `sonnet-cursor` / `opus-plan`）仍完整保留向下兼容。
-> - **优先主会话原生原语**：在 AGY 主会话内做轻量 `scout`/`fast` 任务或监控全量测试时，优先用内置 `invoke_subagent`（`Model: "flash"`，写任务用 `Workspace: "share"`，同主题用 `send_message` 复用），比 shell 另起进程更轻量；批量扇出优先用 `run_workflow`。
+> - **AGY 原生子代理的 `Model` 只有四个别名**：`inherit`（主会话当前模型，如 Neon）、`flash_lite`（gemini-3.5-flash-lite，最便宜）、`flash`（Hydrogen 高思考档）、`pro`（Hydrogen 更高思考档）。`inherit` 由守卫 Hook 按策略改写或拦截；只读调研用 `TypeName="research"` 加 `flash_lite`。**原生 `flash` 子代理只接 `fast` 级的小活**：把简报塞给 `Model="flash"` 的 `self` 子代理只是换了档位，活仍然在 AGY 里、也没有 coder 的测试闭环，需要写简报的任务一律走 `coder`。
+> - **Neon 与 Hydrogen 吃的是同一份 AGY 配额**（实测两者同刻打空、同刻重置，Claude 系列另算）。把活交给 `flash`，省的是 Neon 的份额和主会话上下文，不是 AGY 总量；要把用量真正挪出 AGY，走 `coder` 通道（Claude Code + GLM 等）或 Cursor。
+> - **调研类子代理是最大的 token 出口**：简报里写明回执行数上限，要求先用 `rg` / `grep` 定位、再按行范围读取，不要逐个整文件通读。
 > - **保护订阅限额**：多轮试错、长程写码优先分流给高性价比 `coder`（如 Claude Code + 国产 Coding Plan），避免在限流较严的主订阅上跑长循环。
 
 ---
@@ -80,12 +91,19 @@ description: >-
 
 当某个渠道出现**额度耗尽、限流（429/402）、余额不足、认证失败、服务不可用，或被 `DELEGATE_DISABLED_HARNESSES` / `DELEGATE_DISABLED_PRESETS` 禁用**时，平滑降级不中断任务：
 
-1. **角色降级链**：
+1. **角色降级链**（按顺序逐个尝试，直到某个通道成功）：
    - `heavy`（失败或无额度）→ `coder` → **`fast`**（默认兜底角色，可在 `config.env` 通过 `DELEGATE_DEFAULT_FALLBACK` 自定义）
    - `coder`（无额度或 API 故障）→ **`fast`**
+   - **多级链**：`--fallback fast,scout` 或 `DELEGATE_DEFAULT_FALLBACK=fast,scout`；同一 `harness:model` 在一条链里只试一次。
    - **极端全断兜底**：外部渠道均不可用时，统一走本机可用兜底角色（或主会话原生轻量 subagent）。
-2. **脚本自动降级**：`run_delegate.sh` 默认开启 `--fallback fast`（可覆盖或 `--fallback none` 关闭），遇到非零退出、`is_error: true` 或配额/限流错误时，自动把失败结果备份到 `*.failed-<target>.json` 并切到兜底角色重跑。
-3. **会话级通道熔断**：本会话内一旦观察到某渠道触发配额耗尽，剩余任务直接绕过该渠道；长期停用请写入 `~/.config/multi-agent-delegation/config.env` 的 `DELEGATE_DISABLED_HARNESSES` 或 `DELEGATE_DISABLED_PRESETS`。
+2. **脚本先预检再启动（Preflight）**，不让 CLI 在坏掉的网络路径上空转几分钟：
+   - 从 AGY 会话里调用时，Claude Code 会继承 AGY 的代理设置；代理指向的本机端口不通时，脚本会自动改成直连再试（`DELEGATE_PREFLIGHT_TIMEOUT`，`0` 关闭预检）。
+   - 嵌套 `agy` 依赖的本机代理不通时直接给出原因；可配 `DELEGATE_PROXY_ENSURE_CMD` 让脚本先把隧道拉起来。
+   - headless 的 `agy -p --mode plan` 无法审批工具，脚本会自动在简报前加上「不要调用任何工具」的约束。
+3. **输出文件始终是合法 JSON**：
+   - 成功：harness 自己的结果 JSON（看 `is_error`、`permission_denials`、`usage`）。
+   - 全部失败：`{"status": "failed", "attempts": [{"target", "harness", "model", "exit_code", "reason"}], "next": "..."}`，每个失败通道的原始输出另存为 `*.failed-<target>.json`。agy 在 headless 下「工具被自动拒绝、没有输出」也算失败，不再以退出码 0 蒙混过去。
+4. **会话级通道熔断**：本会话内一旦观察到某渠道触发配额耗尽，剩余任务直接绕过该渠道；长期停用请写入 `~/.config/multi-agent-delegation/config.env` 的 `DELEGATE_DISABLED_HARNESSES` 或 `DELEGATE_DISABLED_PRESETS`。
 
 ---
 
@@ -141,6 +159,7 @@ description: >-
 
 > 若目标角色绑定的是 `cursor`（受 allowlist 限制无法跑 shell），在“验收”段明确写：**“不要尝试运行命令，改完代码即交卷，验收由主会话执行。”**
 > 所有简报遵循**交付物优先（Deliverable-First）**：只要求确定性产物，不派发开放式闲聊任务。
+> **验收段写实**：验收命令用项目配置的测试命令（项目级 `DELEGATE_DEFAULT_TEST_CMD`，如 `pytest`、`npm test,npm run`，多个前缀用逗号分隔）。单测全绿是弱信号——涉及交互行为的改动，把项目自带的 eval / 冒烟也写进验收，否则回归要等用户手测才暴露。
 
 ### 步骤 3：调用委派脚本执行
 使用封装脚本 [run_delegate.sh](./scripts/run_delegate.sh) 按角色派发（可同时后台并行跑多个独立目录）：
@@ -155,12 +174,16 @@ bash ~/.agents/skills/multi-agent-delegation/scripts/run_delegate.sh \
 ```
 
 > 可加 `--resolve-only` 预览该角色在当前项目下解析出的 `harness / model / endpoint / fallback`，确认无误再执行。
+>
+> **在 AGY 主会话内调用**：写 `bash ~/.agents/skills/multi-agent-delegation/scripts/run_delegate.sh ...`。未开启 `DELEGATE_AUTO_ALLOW_DELEGATE` 时，AGY 会就「执行工作区外的脚本并绕过沙箱」弹一次权限确认——这是默认的安全行为，确认后继续即可；在 AGY 里不需要再套一层 `run_delegate.sh` 去起 Hydrogen：`fast` 级小活直接用原生 `invoke_subagent(TypeName="self", Model="flash")`（守卫为 `deny` 时改走 `--role coder`）。
+>
+> **等待与判定（不要误杀还在干活的 coder）**：多文件任务可能跑十几分钟，而且开头几分钟往往只有读取和检索、没有任何文件改动——`--out` 文件是 0 字节、`git status` 没变化都属于正常，结果只在结束时写入。脚本在运行期间每 `DELEGATE_HEARTBEAT_INTERVAL` 秒（默认 30）向 stderr 打一行 `[DELEGATE]` 进度（已用时、工具调用次数、最近一次调用的工具和目标）；Claude Code 的完整事件流留在 `<out>.events.jsonl`。`NotificationTimeoutSeconds` 设 900 以上，收到通知后先查进度——读后台任务日志里的 `[DELEGATE]` 行，或者运行 `bash ~/.agents/skills/multi-agent-delegation/scripts/run_delegate.sh --progress <out.json>`（直接读磁盘上的事件流和进程状态，不依赖任务日志是否实时）：**查询显示 `running`、没有出现 `status: "failed"` 报告、工具调用次数在涨，就继续等**。真要接手，先确认 coder 已经退出（`--progress` 不再显示 `running`），否则会和它改同一批文件。
 
 ### 步骤 4：主会话独立验收（不信自报，且不污染主会话）
 1. **检查改动边界**：`git diff --stat` 确认只改了允许文件、测试文件零改动、无残留文件。
 2. **独立跑验收命令（隔离大输出）**：短输出单点校验可由主会话轻跑；**涉及 `npm test`、全量单测、构建或长日志的独立验收，交由独立的只读 `scout`（或原生 `flash` subagent）执行**（与写代码的 worker 隔离，只回传通过/失败数与末行摘要，避免把主会话上下文撑爆）。
 3. **审查 Diff 逻辑**：逐行读关键 diff，严防硬编码凑通过、删断言或弱化校验（大 diff 可先由异构 `scout` 提炼疑点）。
-4. **检查异常信号**：核对输出 JSON 的 `is_error`、`permission_denials` 或回复中是否有“被拒绝/未能运行”。
+4. **检查异常信号**：输出是 harness 的结果 JSON 时，核对 `is_error`、`permission_denials` 或回复中是否有“被拒绝/未能运行”；输出是 `status: "failed"` 的失败报告时，按 `attempts[].reason` 区分**环境问题**（端点或代理不可达、配额、headless 下工具被拒）与**任务问题**。环境问题按报告里的 `next` 处理（守卫策略允许时改用原生 `invoke_subagent(TypeName="self", Model="flash")`，`deny` 下由主会话接手），或修复通道后重试，不要原地反复重跑同一条命令。
 5. **熔断与升级**：若 `coder` 2–3 轮仍未通过，收集失败日志与当前 diff，由主会话诊断后补充背景重试，或升级到 `--role heavy`。
 
 ### 步骤 5：合入与清理
@@ -174,4 +197,6 @@ bash ~/.agents/skills/multi-agent-delegation/scripts/run_delegate.sh \
 - **严禁**在 `config.env` 中写入明文 API Key（仅通过 `*_API_KEY_ENV` 引用环境变量名）。
 - **严禁**子代理修改测试文件以掩盖代码问题（除非任务本身是编写/更新测试）。
 - **严禁**多个写任务共享同一个工作目录。
+- **`DELEGATE_AUTO_ALLOW_DELEGATE=1` 是一项长期授权**，只在你信任当前主会话时开启：它让规范形式的 `run_delegate.sh` 命令免权限确认并绕过 AGY 沙箱，而被委派的 Claude Code 可以在 `--dir` 内改文件、执行**配置里**的测试命令（`Bash(<test-cmd>:*)`）。守卫 Hook 只放行同时满足以下条件的命令，其余一律回到 AGY 默认权限流程：角色/预设在已知列表内；不带自定义 `--test-cmd`；`--dir` / `--brief` / `--out` 都在工作区或 `DELEGATE_SCRATCH_DIR` 内；不含 shell 元字符，也没有重复选项。
+- **守卫 Hook 出错时只会「不干预」**：任何异常都回答 `ask`（回到 AGY 默认权限流程），绝不因为崩溃而放行或拦截。
 - **合规边界**：CLI 委派仅限单用户在人工发起的当前工作流中按需调用，**严禁** 24/7 无人值守挂机循环或接入违规第三方代理。

@@ -81,8 +81,9 @@ description: >-
 > - 细小单点改动由主会话直接完成，避免委派固定开销。
 > - 旧版 `--preset`（`hydrogen-low` / `hydrogen` / `glm` / `glm-opus` / `sonnet-agy` / `sonnet-cursor` / `opus-plan`）仍完整保留向下兼容。
 > - **AGY 原生子代理的 `Model` 只有四个别名**：`inherit`（主会话当前模型，如 Neon）、`flash_lite`（gemini-3.5-flash-lite，最便宜）、`flash`（Hydrogen 高思考档）、`pro`（Hydrogen 更高思考档）。`inherit` 由守卫 Hook 按策略改写或拦截；只读调研用 `TypeName="research"` 加 `flash_lite`。**原生 `flash` 子代理只接 `fast` 级的小活**：把简报塞给 `Model="flash"` 的 `self` 子代理只是换了档位，活仍然在 AGY 里、也没有 coder 的测试闭环，需要写简报的任务一律走 `coder`。
+> - **AGY Plan/Execute（Orchestrator）模式与 `coder` 交接**：规划阶段遇到多文件实现、新增多个测试或带测试闭环的 Bug 修复，通过 `exit_plan_mode` 交付「写简报到 `.runtime/` 或 `DELEGATE_SCRATCH_DIR` → 后台调 `run_delegate.sh --role coder`（`NotificationTimeoutSeconds` 设 900 以上）→ 独立验收」的编排步骤，而不是让执行模型在主会话逐文件 `edit_file` 与反复跑测；仅纯文档同步或 1–2 个文件数行级小改才由执行模型直接完成。
 > - **Neon 与 Hydrogen 吃的是同一份 AGY 配额**（实测两者同刻打空、同刻重置，Claude 系列另算）。把活交给 `flash`，省的是 Neon 的份额和主会话上下文，不是 AGY 总量；要把用量真正挪出 AGY，走 `coder` 通道（Claude Code + GLM 等）或 Cursor。
-> - **调研类子代理是最大的 token 出口**：简报里写明回执行数上限，要求先用 `rg` / `grep` 定位、再按行范围读取，不要逐个整文件通读。
+> - **调研类子代理是最大的 token 出口**：简报里写明回执行数上限，要求先用 `rg` / `grep` 定位、再按行范围读取，不要逐个整文件通读；大型盘点拆分为 2–3 分钟内可完成的窄范围子代理（纯清单/搜索用 `flash_lite`，需推理用 `flash`），避免单个近 10 分钟的笼统调研。
 > - **保护订阅限额**：多轮试错、长程写码优先分流给高性价比 `coder`（如 Claude Code + 国产 Coding Plan），避免在限流较严的主订阅上跑长循环。
 
 ---

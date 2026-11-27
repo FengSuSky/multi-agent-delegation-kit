@@ -171,6 +171,12 @@ class StrictPolicyWorkerTest(HookTestCase):
     def test_leaves_a_prompt_marked_allow_inherit_untouched(self):
         self.assertEqual(self.subagent(Model="flash", Prompt="[allow-inherit] implement S3"), {"decision": "allow"})
 
+    def test_routes_full_tests_to_coder_instead_of_main_session_or_research(self):
+        reason = self.subagent(Model="flash")["reason"]
+        self.assertIn("全量测试", reason)
+        self.assertIn("coder", reason)
+        self.assertNotIn("Shell 重定向", reason)
+
 
 class DelegationCommandTest(HookTestCase):
     def test_leaves_delegation_commands_to_the_default_permission_flow_by_default(self):
@@ -251,6 +257,16 @@ class DelegationCommandTest(HookTestCase):
             workdir=self.workspace / ".trees" / "fix",
         )
         self.assertEqual(self.run_command(command), AUTO_ALLOW)
+
+    def test_auto_allows_delegation_with_multi_prefix_project_test_and_git_whitelist(self):
+        self.configure("DELEGATE_AUTO_ALLOW_DELEGATE=1")
+        proj_cfg = self.workspace / ".agents" / "delegation" / "config.env"
+        proj_cfg.parent.mkdir(parents=True, exist_ok=True)
+        proj_cfg.write_text(
+            "DELEGATE_DEFAULT_TEST_CMD=npm test,npm run,node --test,git status,git diff,git log,git add,git commit\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(self.run_command(self.delegation_command()), AUTO_ALLOW)
 
     def test_refuses_a_repeated_option_even_when_enabled(self):
         self.configure("DELEGATE_AUTO_ALLOW_DELEGATE=1")

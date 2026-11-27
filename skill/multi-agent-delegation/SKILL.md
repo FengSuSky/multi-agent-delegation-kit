@@ -6,8 +6,8 @@ description: >-
   harnesses (AGY, Claude Code with GLM/DeepSeek/Kimi/MiniMax endpoints, Cursor) with
   user/project layered config, an AGY guard hook that keeps the primary model orchestrating,
   preflight checks, multi-hop fallback with structured failure reports, progress heartbeats, and session reuse.
-  Use when delegating implementation, parallel subtasks, codebase research, test monitoring,
-  or cross-model review.
+  Use when delegating implementation, parallel subtasks, codebase research, full test/eval runs,
+  routine git wrap-up, or cross-model review.
 ---
 
 # 多 Agent 异构委派工作流（角色路由 × 多 Harness）
@@ -51,17 +51,19 @@ description: >-
 
 ---
 
-## 0.5 主会话零噪音原则（Clean Main Session）
+## 0.5 主会话零噪音与防膨胀原则（Clean Main Session）
 
 随着项目推进，频繁的 tool calls（跑测试、读大文件、多目录检索、反复试错）会迅速塞满主会话上下文并稀释注意力。本工作流强制将**编排决策**与**工具执行**隔离：
 
 - **主会话只留 4 类高价值信息**：与用户交互与需求澄清、当前计划与决策、subagent 进展追踪、最终验收结果对齐。
-- **以下操作默认隔离在 subagent 上下文中（禁止在主会话直接刷屏）**：
-  - `npm test` / `pytest` / 构建 / 评测跑批等测试与校验命令；
-  - 跨文件/大范围代码库检索、大文件通读、批量分支与日志盘点；
-  - 多轮编码试错、报错堆栈排查与中间产物查看。
-- **只对齐结果，细节留在 subagent**：中间日志与过程保留在 subagent 上下文（需要追问细节时用 `send_message` 或 `--resume` 续问原 subagent）或写入报告文件；主会话仅接收 **5–10 行结构化回执**（状态、通过/失败数、改动点、失败定位或报告路径）。
-- **主会话也不为「实现」去通读源码**：需要了解代码时，让 scout / research 返回「文件 + 行号范围」的代码地图（不超过 40 行），主会话只读验收 diff 真正需要的最小范围。实测一个 AGY 主会话 75% 的上下文来自它自己的 `read_file`，而子代理回执合计不到一成——上下文是被「自己读文件」撑爆的，不是被回执。
+- **以下操作默认隔离在 subagent / `coder` 上下文中（禁止在主会话直接刷屏）**：
+  - **`npm test` / `pytest` / 构建 / 评测跑批等全量测试与校验**：统一走 `coder` 通道执行，**主会话禁止裸跑全量 `npm test` / `pytest` 等大输出测试**（避免与全局「日志落盘截断」及「禁止 Shell 重定向/复合命令」规则冲突）；
+  - 跨文件/大范围代码库检索、大文件通读、大日志根因定位与批量分支盘点（交由只读 `scout`）；
+  - 多轮编码试错、报错堆栈排查与常规 Git 整理收尾（交由 `coder`）。
+- **只对齐结果，细节留在子代理或落盘**：中间日志与过程保留在子代理上下文（需要追问细节时用 `send_message` 或 `--resume` 续问原执行者）或写入报告文件；主会话仅接收 **5–10 行结构化回执**（状态、通过/失败数、关键指标、改动点、失败定位与报告路径）。
+- **主会话不代读参考源码**：写 `coder` 简报只写「目标 + 验收 + 允许范围 + 失败日志路径 + 已知根因」；需要了解代码位置时，只派一次只读 `scout` 返回 **≤30 行「文件:行号」地图**，不把源码片段抄进简报，主会话只读验收 diff 真正需要的最小范围。实测一个 AGY 主会话 75% 的上下文来自它自己的 `read_file`，而子代理回执合计不到一成——上下文是被「自己读文件」撑爆的，不是被回执。
+- **大快照 / 单行超大文件不裸 diff**：凡 `*.snap`、`*snapshots*.json`、`package-lock.json` 等单行超长或体积巨大的文件，**禁止主会话直接 `git diff`**，交由 `scout` 或 `coder` 按键级比对返回 ≤10 行摘要。
+- **免每场会话重复通读完整 `SKILL.md`**：注入全局核心 MD 的规则片段已覆盖常规 `--role coder` 派发、等待与验收流程；仅在涉及 `--resume`、`load_config.sh` 或故障排查时按章节局部读取 `SKILL.md`。
 - **一个阶段一个会话**：一轮实现合并后新开会话，用主会话写的交接文档衔接；上下文超过约 15 万 token 就 `/compact` 或新开。
 
 ---
@@ -70,9 +72,9 @@ description: >-
 
 | 任务类型 | 通用角色 (`--role`) | 能力画像与典型组合示例 |
 | :--- | :--- | :--- |
-| 检索、摘要、全量测试/评测监控、大日志分析、结构化抽取 | `scout`（或原生 `flash_lite` subagent） | 极快、极便宜、隔离大输出只回 5–10 行摘要（AGY 内用 `invoke_subagent(TypeName="research", Model="flash_lite")`，需要推理时用 `flash`；脚本通道为 AGY Hydrogen-low / DeepSeek-Chat） |
+| **纯只读分析**：代码地图、大日志/测试报告根因定位、大快照 diff 摘要、文档盘点 | `scout`（或原生 `research` subagent） | 极快、极便宜、隔离大输出只回 5–10 行摘要（AGY 内用 `invoke_subagent(TypeName="research", Model="flash_lite")`，需要推理时用 `flash`；脚本通道为 AGY Hydrogen-low / DeepSeek-Chat）。**明文禁止**派原生 `research` 跑需要本地端口或家目录配置的测试套件（只读无网沙盒会报 `fetch failed` / `EPERM` 或悬挂句柄） |
 | 细微杂活、补单个单测、中小型确定性改动 | `fast`（或原生 `flash` subagent） | 低成本 + 终端可自验。**`fast` 级的判定标准：一两个文件、不需要先读代码定位、一轮就能改完自验**，超出任一条就是 `coder`。AGY 内用 `invoke_subagent(TypeName="self", Model="flash", Workspace="share")`（守卫为 `deny` 时会被拦截，改走 `coder`）；脚本通道为 AGY Hydrogen / DeepSeek-Chat |
-| 常规/多文件代码实现、带测试闭环的 Bug 修复 | `coder` | 强 Harness（Claude Code）× 高性价比模型（智谱 GLM / Kimi / DeepSeek / MiniMax 等） |
+| **统一 Act 执行通道**：多文件实现 + 自测闭环、**全量测试/评测跑批与失败排查**、**常规 Git 整理与收尾**（`git status` / `git diff --stat`、白名单精准 `git add`、分批 `git commit`、仅授权时 `git push`） | `coder` | 强 Harness（Claude Code）× 高性价比模型（智谱 GLM / Kimi / DeepSeek / MiniMax 等） |
 | `coder` 连续 2–3 轮自修仍不绿（熔断升级） | `heavy` | 稀缺旗舰编程模型攻坚（Sonnet / GLM-5.4 / Cursor 等） |
 | 高风险架构、棘手权衡（只读联合决策） | `architect` | 最强推理旗舰 + 只读 Plan 模式（Opus / Neon 等），由主会话先提炼高密度上下文 |
 | 异构交叉 Review | 跨模型家族互审 | 绝不让写代码的同源模型自审（例如 GLM/DeepSeek 写的 → 主会话或 Sonnet 审） |
@@ -80,11 +82,11 @@ description: >-
 > 注：
 > - 细小单点改动由主会话直接完成，避免委派固定开销。
 > - 旧版 `--preset`（`hydrogen-low` / `hydrogen` / `glm` / `glm-opus` / `sonnet-agy` / `sonnet-cursor` / `opus-plan`）仍完整保留向下兼容。
-> - **AGY 原生子代理的 `Model` 只有四个别名**：`inherit`（主会话当前模型，如 Neon）、`flash_lite`（gemini-3.5-flash-lite，最便宜）、`flash`（Hydrogen 高思考档）、`pro`（Hydrogen 更高思考档）。`inherit` 由守卫 Hook 按策略改写或拦截；只读调研用 `TypeName="research"` 加 `flash_lite`。**原生 `flash` 子代理只接 `fast` 级的小活**：把简报塞给 `Model="flash"` 的 `self` 子代理只是换了档位，活仍然在 AGY 里、也没有 coder 的测试闭环，需要写简报的任务一律走 `coder`。
-> - **AGY Plan/Execute（Orchestrator）模式与 `coder` 交接**：规划阶段遇到多文件实现、新增多个测试或带测试闭环的 Bug 修复，通过 `exit_plan_mode` 交付「把简报与输出 JSON 默认写到 `<artifactDirectoryPath>/scratch/`（免工作区外写权限弹窗、不污染 `git status`，守卫自动放行）或 `DELEGATE_SCRATCH_DIR` → 后台调 `run_delegate.sh --role coder`（`NotificationTimeoutSeconds` 设 900 以上）→ 独立验收」的编排步骤，而不是让执行模型在主会话逐文件 `edit_file` 与反复跑测。单任务直接 `--dir .` 改当前工作区、靠 `git diff` 验收，仅并发多写任务才开 `git worktree`；首次在无 `.agents/delegation/config.env` 的非 Python 项目委派前，先检查并补齐项目级 `DELEGATE_DEFAULT_TEST_CMD`（如 `npm test,npm run,npx`、`pytest,python3`、`go test`、`cargo test`），避免 `coder` 遇 `permission_denials` 或因传 `--test-cmd` 触发审批弹窗。仅纯文档同步或 1–2 个文件数行级小改才由执行模型直接完成。
+> - **AGY 原生子代理的 `Model` 只有四个别名**：`inherit`（主会话当前模型，如 Neon）、`flash_lite`（gemini-3.5-flash-lite，最便宜）、`flash`（Hydrogen 高思考档）、`pro`（Hydrogen 更高思考档）。`inherit` 由守卫 Hook 按策略改写或拦截；纯只读分析用 `TypeName="research"` 加 `flash_lite`。**原生 `flash` 子代理只接 `fast` 级的小活**：把简报塞给 `Model="flash"` 的 `self` 子代理只是换了档位，活仍然在 AGY 里、也没有 coder 的测试闭环，需要写简报或执行 Act 闭环的任务一律走 `coder`。
+> - **AGY Plan/Execute（Orchestrator）模式与 `coder` 交接**：规划阶段遇到多文件实现、新增多个测试、带测试闭环的 Bug 修复或全量测试/评测验收，通过 `exit_plan_mode` 交付「把简报与输出 JSON 默认写到 `<artifactDirectoryPath>/scratch/`（免工作区外写权限弹窗、不污染 `git status`，守卫自动放行）或 `DELEGATE_SCRATCH_DIR` → 后台调 `run_delegate.sh --role coder`（`NotificationTimeoutSeconds` 设 900 以上）→ 独立验收」的编排步骤，而不是让执行模型在主会话逐文件 `edit_file` 与裸跑全量测试。单任务直接 `--dir .` 改当前工作区、靠 `git diff --stat` 验收，仅并发多写任务才开 `git worktree`；首次在无 `.agents/delegation/config.env` 的非 Python 项目委派前，先检查并补齐项目级 `DELEGATE_DEFAULT_TEST_CMD`（如 `npm test,npm run,node --test,git status,git diff,git log,git add,git commit`，按需追加 `,git push`）、`pytest,python3`、`go test`、`cargo test` 等，避免 `coder` 遇 `permission_denials` 或因传 `--test-cmd` 触发审批弹窗。仅纯文档同步或 1–2 个文件数行级小改才由执行模型直接完成。
 > - **Neon 与 Hydrogen 吃的是同一份 AGY 配额**（实测两者同刻打空、同刻重置，Claude 系列另算）。把活交给 `flash`，省的是 Neon 的份额和主会话上下文，不是 AGY 总量；要把用量真正挪出 AGY，走 `coder` 通道（Claude Code + GLM 等）或 Cursor。
 > - **调研类子代理是最大的 token 出口**：简报里写明回执行数上限，要求先用 `rg` / `grep` 定位、再按行范围读取，不要逐个整文件通读；大型盘点拆分为 2–3 分钟内可完成的窄范围子代理（纯清单/搜索用 `flash_lite`，需推理用 `flash`），避免单个近 10 分钟的笼统调研。
-> - **保护订阅限额**：多轮试错、长程写码优先分流给高性价比 `coder`（如 Claude Code + 国产 Coding Plan），避免在限流较严的主订阅上跑长循环。
+> - **保护订阅限额**：多轮试错、长程写码、全量评测跑批与常规 Git 整理优先分流给高性价比 `coder`（如 Claude Code + 国产 Coding Plan），避免在限流较严的主订阅上跑长循环或消耗大量轮次。
 
 ---
 
@@ -152,16 +154,16 @@ description: >-
 ## 范围
 只允许修改: <文件列表>。禁止: 修改测试 / 其他文件 / 新建文件 / 改公开签名 / 装依赖。
 
-## 背景（可选，仅放已知事实）
-<已定位的根因、文件:行号、主会话已拍板的决定>
+## 背景（可选，仅放已知事实，不代读也不抄源码）
+<失败日志路径、已定位的根因、≤30 行文件:行号地图、主会话已拍板的决定>
 
 ## 完成后
-3-5 行以内汇报: 改动点 + 根因 + 验收命令末行输出。最多自修 2-3 轮，若测试仍失败则立即停止并汇报卡点。
+5-10 行以内结构化汇报: 改动点 + 根因 + 关键指标 + 验收命令末行/摘要 + 报告路径。最多自修 2-3 轮，若测试仍失败则立即停止并汇报卡点。
 ```
 
-> 若目标角色绑定的是 `cursor`（受 allowlist 限制无法跑 shell），在“验收”段明确写：**“不要尝试运行命令，改完代码即交卷，验收由主会话执行。”**
+> 若目标角色绑定的是 `cursor`（受 allowlist 限制无法跑 shell），在“验收”段明确写：**“不要尝试运行命令，改完代码即交卷，验收由主会话另派 `coder` 执行。”**
 > 所有简报遵循**交付物优先（Deliverable-First）**：只要求确定性产物，不派发开放式闲聊任务。
-> **验收段写实**：验收命令用项目配置的测试命令（项目级 `DELEGATE_DEFAULT_TEST_CMD`，如 `pytest`、`npm test,npm run`，多个前缀用逗号分隔）。首次在无 `.agents/delegation/config.env` 的非 Python 项目委派前，先检查并补齐项目级 `DELEGATE_DEFAULT_TEST_CMD`（如 `npm test,npm run,npx`、`pytest,python3`、`go test`、`cargo test`），避免 `coder` 遇 `permission_denials` 或因传 `--test-cmd` 触发审批弹窗。单测全绿是弱信号——涉及交互行为的改动，把项目自带的 eval / 冒烟也写进验收，否则回归要等用户手测才暴露。
+> **验收段写实与不代读源码**：写简报前不要为了写清上下文而逐个 `read_file` 参考文件；`coder` 自己能读源码，真需定位时只派一次 `scout` 返回 ≤30 行文件:行号地图即可。验收命令用项目配置的测试命令（项目级 `DELEGATE_DEFAULT_TEST_CMD`，多个前缀用逗号分隔）。首次在无 `.agents/delegation/config.env` 的非 Python 项目委派前，先检查并补齐项目级 `DELEGATE_DEFAULT_TEST_CMD`（例如 Node.js 推荐：`npm test,npm run,node --test,git status,git diff,git log,git add,git commit`，按需可追加 `,git push`），避免 `coder` 遇 `permission_denials` 或因传 `--test-cmd` 触发审批弹窗。单测全绿是弱信号——涉及交互行为的改动，把项目自带的 eval / 冒烟也写进验收，否则回归要等用户手测才暴露。
 
 ### 步骤 3：调用委派脚本执行
 使用封装脚本 [run_delegate.sh](./scripts/run_delegate.sh) 按角色派发（可同时后台并行跑多个独立目录）：
@@ -184,14 +186,14 @@ bash ~/.agents/skills/multi-agent-delegation/scripts/run_delegate.sh \
 > **等待与判定（不要误杀还在干活的 coder）**：多文件任务可能跑十几分钟，而且开头几分钟往往只有读取和检索、没有任何文件改动——`--out` 文件是 0 字节、`git status` 没变化都属于正常，结果只在结束时写入。脚本在运行期间每 `DELEGATE_HEARTBEAT_INTERVAL` 秒（默认 30）向 stderr 打一行 `[DELEGATE]` 进度（已用时、工具调用次数、最近一次调用的工具和目标）；Claude Code 的完整事件流留在 `<out>.events.jsonl`。`NotificationTimeoutSeconds` 设 900 以上，收到通知后先查进度——读后台任务日志里的 `[DELEGATE]` 行，或者运行 `bash ~/.agents/skills/multi-agent-delegation/scripts/run_delegate.sh --progress <out.json>`（直接读磁盘上的事件流和进程状态，不依赖任务日志是否实时）：**查询显示 `running`、没有出现 `status: "failed"` 报告、工具调用次数在涨，就继续等**。真要接手，先确认 coder 已经退出（`--progress` 不再显示 `running`），否则会和它改同一批文件。
 
 ### 步骤 4：主会话独立验收（不信自报，且不污染主会话）
-1. **检查改动边界**：`git diff --stat` 确认只改了允许文件、测试文件零改动、无残留文件。
-2. **独立跑验收命令（隔离大输出）**：短输出单点校验可由主会话轻跑；**涉及 `npm test`、全量单测、构建或长日志的独立验收，交由独立的只读 `scout`（或原生 `flash` subagent）执行**（与写代码的 worker 隔离，只回传通过/失败数与末行摘要，避免把主会话上下文撑爆）。
-3. **审查 Diff 逻辑**：逐行读关键 diff，严防硬编码凑通过、删断言或弱化校验（大 diff 可先由异构 `scout` 提炼疑点）。
+1. **检查改动边界**：`git diff --stat` 确认只改了允许文件、测试文件零改动、无残留文件。凡 `*.snap`、`*snapshots*.json`、`package-lock.json` 等大快照或单行超大文件，**禁止主会话直接裸跑 `git diff`**，交由只读 `scout` 或 `coder` 按键级比对返回 ≤10 行摘要。
+2. **独立跑验收命令（隔离大输出）**：短输出单点校验可由主会话轻跑；**全量测试（`npm test` / `pytest` 等）、评测跑批与构建验收统一交由 `coder` 通道执行**（日志留存 `coder` 侧或落盘，只回传 5–10 行结构化摘要：通过/失败数、关键指标、失败定位与报告路径；**明文禁止**派只读无网 `research` 子代理跑需本地端口或家目录配置的测试，也禁止主会话裸跑）。
+3. **审查 Diff 逻辑**：逐行读关键 diff，严防硬编码凑通过、删断言或弱化校验（大 diff 可先由只读 `scout` 提炼疑点）。
 4. **检查异常信号**：输出是 harness 的结果 JSON 时，核对 `is_error`、`permission_denials` 或回复中是否有“被拒绝/未能运行”；输出是 `status: "failed"` 的失败报告时，按 `attempts[].reason` 区分**环境问题**（端点或代理不可达、配额、headless 下工具被拒）与**任务问题**。环境问题按报告里的 `next` 处理（守卫策略允许时改用原生 `invoke_subagent(TypeName="self", Model="flash")`，`deny` 下由主会话接手），或修复通道后重试，不要原地反复重跑同一条命令。
 5. **熔断与升级**：若 `coder` 2–3 轮仍未通过，收集失败日志与当前 diff，由主会话诊断后补充背景重试，或升级到 `--role heavy`。
 
-### 步骤 5：合入与清理
-验收全绿后将改动合入主工作区（`git merge` / `cherry-pick`），移除 worktree（`git worktree remove .trees/<task>`）或清理 scratch 目录。
+### 步骤 5：合入与清理（常规 Git 收尾可走 `coder`）
+验收全绿后，将改动合入主工作区（`git merge` / `cherry-pick`），移除 worktree（`git worktree remove .trees/<task>`）或清理 scratch 目录。常规 Git 整理与收尾（核对 `git status` / `git diff --stat`、按白名单路径精准 `git add`、分批 `git commit`、仅用户明确授权时 `git push`）也可直接写入简报交由 `coder` 执行，释放主会话额度与轮次。
 
 ---
 
@@ -201,6 +203,7 @@ bash ~/.agents/skills/multi-agent-delegation/scripts/run_delegate.sh \
 - **严禁**在 `config.env` 中写入明文 API Key（仅通过 `*_API_KEY_ENV` 引用环境变量名）。
 - **严禁**子代理修改测试文件以掩盖代码问题（除非任务本身是编写/更新测试）。
 - **严禁**多个写任务共享同一个工作目录。
-- **`DELEGATE_AUTO_ALLOW_DELEGATE=1` 是一项长期授权**，只在你信任当前主会话时开启：它让规范形式的 `run_delegate.sh` 命令免权限确认并绕过 AGY 沙箱，而被委派的 Claude Code 可以在 `--dir` 内改文件、执行**配置里**的测试命令（`Bash(<test-cmd>:*)`）。守卫 Hook 只放行同时满足以下条件的命令，其余一律回到 AGY 默认权限流程：角色/预设在已知列表内；不带自定义 `--test-cmd`；`--dir` 在工作区或 `DELEGATE_SCRATCH_DIR` 内；`--brief` / `--out` / `--progress` 在工作区、`DELEGATE_SCRATCH_DIR` 或 `<artifactDirectoryPath>/scratch/` 内；不含 shell 元字符，也没有重复选项。
+- **Git 操作红线**：在 `DELEGATE_DEFAULT_TEST_CMD` 配置 Git 白名单时，**无用户明确指令严禁 `git push`**；**严禁** `--force`、`--force-with-lease` 滥用、`git reset --hard`、`git clean -fd` 等破坏性参数；**严禁** `git add -A` / `git add .`（必须按白名单路径精准暂存）。
+- **`DELEGATE_AUTO_ALLOW_DELEGATE=1` 是一项长期授权**，只在你信任当前主会话时开启：它让规范形式的 `run_delegate.sh` 命令免权限确认并绕过 AGY 沙箱，而被委派的 Claude Code 可以在 `--dir` 内改文件、执行**配置里**的测试/Git 白名单命令（`Bash(<test-cmd>:*)`）。守卫 Hook 只放行同时满足以下条件的命令，其余一律回到 AGY 默认权限流程：角色/预设在已知列表内；不带自定义 `--test-cmd`；`--dir` 在工作区或 `DELEGATE_SCRATCH_DIR` 内；`--brief` / `--out` / `--progress` 在工作区、`DELEGATE_SCRATCH_DIR` 或 `<artifactDirectoryPath>/scratch/` 内；不含 shell 元字符，也没有重复选项。
 - **守卫 Hook 出错时只会「不干预」**：任何异常都回答 `ask`（回到 AGY 默认权限流程），绝不因为崩溃而放行或拦截。
 - **合规边界**：CLI 委派仅限单用户在人工发起的当前工作流中按需调用，**严禁** 24/7 无人值守挂机循环或接入违规第三方代理。

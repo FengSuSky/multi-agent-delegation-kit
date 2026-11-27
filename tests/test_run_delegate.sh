@@ -300,6 +300,15 @@ it "still grants a single test command as before"
 run_delegate --role coder --test-cmd pytest --fallback none
 assert_contains "single prefix rule" "Bash(pytest:*)" "$(claude_argv)"
 
+it "preserves a multi-prefix project test and local git whitelist from project config.env"
+mkdir -p "${WORK}/.agents/delegation"
+printf '%s\n' 'DELEGATE_DEFAULT_TEST_CMD=npm test,npm run,node --test,git status,git diff,git log,git add,git commit' > "${WORK}/.agents/delegation/config.env"
+resolved_json="$(bash "$DELEGATE" --role coder --resolve-only --dir "$WORK")"
+assert_contains "resolve-only keeps the full whitelist" '"test_cmd": "npm test,npm run,node --test,git status,git diff,git log,git add,git commit"' "$resolved_json"
+run_delegate --role coder --fallback none
+assert_contains "claude gets each test and local git prefix" "Bash(npm test:*,npm run:*,node --test:*,git status:*,git diff:*,git log:*,git add:*,git commit:*)" "$(claude_argv)"
+rm -rf "${WORK}/.agents"
+
 echo "headless plan mode"
 it "tells a headless agy plan run not to call tools, because nobody can approve them"
 : > "$USER_CFG_FILE"

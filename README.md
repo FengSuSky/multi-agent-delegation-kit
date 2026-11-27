@@ -14,9 +14,9 @@
 
 | 通用角色 (`--role`) | 职责定位 | 典型选型思路 |
 | :--- | :--- | :--- |
-| **`scout`** | 检索、摘要、全量测试/评测监控、大日志分析 | 极快便宜、隔离大输出（AGY Hydrogen-low / DeepSeek-Chat / 原生 `flash`） |
+| **`scout`** | **纯只读分析**：代码地图、大日志/测试报告根因定位、大快照 diff 摘要、文档盘点（**禁止**跑需本地端口或家目录配置的测试） | 极快便宜、隔离大输出（AGY Hydrogen-low / DeepSeek-Chat / 原生 `research` + `flash_lite`） |
 | **`fast`** | 细微杂活、补单测、中小型确定性改动 | 低成本 + 终端自验（AGY Hydrogen / DeepSeek-Chat） |
-| **`coder`** | 常规/多文件代码实现、带测试闭环的 Bug 修复 | 强 Harness（Claude Code）× 国内高性价比 Coding Plan（智谱 GLM / Kimi / DeepSeek / MiniMax） |
+| **`coder`** | **统一 Act 执行通道**：多文件实现 + 自测闭环、**全量测试/评测跑批**、**常规 Git 整理收尾**（精准 `git add` / 分批 `commit` / 仅授权时 `push`） | 强 Harness（Claude Code）× 国内高性价比 Coding Plan（智谱 GLM / Kimi / DeepSeek / MiniMax） |
 | **`heavy`** | `coder` 连续 2–3 轮自修不绿时的熔断升级 | 稀缺旗舰编程模型（Sonnet / GLM-5.4 / Cursor） |
 | **`architect`** | 高风险架构、跨模块权衡（只读 Plan 模式） | 最强推理旗舰（Opus / Neon），主会话先提炼高密度上下文再拍板 |
 
@@ -71,7 +71,7 @@ bash ./install.sh --skill-only --profile claude-deepseek-glm
 | :--- | :--- | :--- |
 | **用户级** | `~/.config/multi-agent-delegation/config.env` | 配置 5 角色绑定（`DELEGATE_ROLE_*=harness:model`）、按角色端点（`*_BASE_URL` / `*_API_KEY_ENV`）、禁用 Harness/预设、默认预算与超时 |
 | **用户级** | `~/.config/multi-agent-delegation/overrides.md` | 自然语言个人偏好（渠道配额备注、自定义路由习惯），与 `~/.gemini/AGENTS.md` / `~/.claude/CLAUDE.md` 自动联动 |
-| **项目级** | `<repo>/.agents/delegation/config.env` | 覆盖当前项目的测试命令（如 `DELEGATE_DEFAULT_TEST_CMD=pytest` / `npm`）、预算上限或单角色模型 |
+| **项目级** | `<repo>/.agents/delegation/config.env` | 覆盖当前项目的测试与本地 Git 安全白名单命令（如 `DELEGATE_DEFAULT_TEST_CMD=npm test,npm run,node --test,git status,git diff,git log,git add,git commit`）、预算上限或单角色模型 |
 | **项目级** | `<repo>/.agents/delegation/overrides.md` | 当前项目的验收命令、禁改目录与升级策略，与 `<repo>/AGENTS.md` / `<repo>/CLAUDE.md` 自动联动 |
 
 ### 常用配置与调试命令

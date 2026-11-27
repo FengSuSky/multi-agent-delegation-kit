@@ -66,13 +66,13 @@
 3-5 行以内汇报: 改动点 + 根因 + 验收命令末行输出（最多自修 2-3 轮，仍失败则停止并汇报卡点）
 ```
 
-## 4. 主会话验收清单（不信自报，自己验）
+## 4. 主会话验收清单（不信自报，自己验，且不膨胀）
 
-1. `git diff --stat` / `diff -ru` 确认只改了允许文件、测试未改、无多余文件；
-2. 主会话自己跑验收命令确认全绿；
-3. 逐行读 diff 防硬编码、特判或弱化校验；
+1. `git diff --stat` / `diff -ru` 确认只改了允许文件、测试未改、无多余文件（`*.snap` / `*snapshots*.json` / `package-lock.json` 等大文件不裸跑 `git diff`，交由 `scout` 或 `coder` 摘要）；
+2. 短输出单点校验可轻跑；**全量测试、评测跑批与构建验收走 `coder` 通道并回传 5–10 行摘要**（禁止派只读无网 `research` 跑需本地端口或家目录配置的测试，也禁止主会话裸跑）；
+3. 逐行读关键 diff 防硬编码、特判或弱化校验；
 4. 检查输出 JSON 的 `is_error`、`permission_denials` 或回复文本中有无“被拒/未能运行”；输出是 `status: "failed"` 的失败报告时，先看 `attempts[].reason` 再决定下一步；
-5. 核对耗时与 `usage`；通过后合入主分支并清理 worktree / scratch。
+5. 核对耗时与 `usage`；通过后合入主分支并清理 worktree / scratch（常规 Git 整理与收尾也可交由 `coder` 执行）。
 
 ---
 
@@ -119,6 +119,13 @@
 前两段记录对应脚本的四个行为：预检、代理自动回退直连、多级回退链、结构化失败报告；最后一段对应进度心跳：运行期间每 30 秒向 stderr 报一行已用时、工具调用次数和最近一次调用，`run_delegate.sh --progress <out.json>` 随时可查，不依赖调用方怎样处理 stderr。
 
 > 配额按什么计权（token、请求数还是按模型打折）本地数据看不出来，用 agy 的 `/quota` 核对。
+
+**实战复盘：Read vs Act 边界与防膨胀（`voice-agent-harness`）**
+
+1. **角色边界错位**：原规则把「全量测试监控」划给 `scout`（原生 `research` 只读无网子代理）。实战中需要绑定本地回环端口或读取 `~/.config` 的 `npm test` 一进 `research` 沙盒就报 `fetch failed` / `EPERM` 甚至悬挂句柄，逼主会话退回 `BypassSandbox: true` 裸跑 5 次 `npm test`，每次塞入约 580 KB 日志预览。→ **解法**：`scout` 收窄为纯只读分析（代码地图、日志/报告定位、大快照摘要），全量测试与评测跑批统一划归 `coder`。
+2. **规则 2.3 与 2.4 冲突**：一条要求主会话长输出落盘截断，另一条禁止沙盒外命令拼 `> /tmp/... && tail`。→ **解法**：全量测试不进主会话，彻底走 `coder` 通道只回 5–10 行摘要，从根源消除规则冲突。
+3. **机械性 Act 操作消耗主会话额度**：全量验收、评测跑批、精准 `git add` / 拆 commit 等纯执行任务在主会话消耗高配额与轮次。→ **解法**：在项目 `.agents/delegation/config.env` 声明 `DELEGATE_DEFAULT_TEST_CMD`（测试 + 安全本地 Git 子命令白名单），把全量跑测与常规 Git 收尾统一下沉给 `coder`，并用安全红线锁死 `git push`、`--force`、`git reset --hard` 与 `git add -A/.`。
+4. **代读源码与大快照裸 diff 撑爆上下文**：写 `coder` 简报前习惯性逐个 `read_file` 参考文件再抄进简报，且对 `*snapshots*.json` 直接跑 `git diff` 灌入上百 KB 截断输出。→ **解法**：简报不抄源码（最多派一次 `scout` 返回 ≤30 行文件:行号地图），大快照文件禁止主会话裸 `git diff`。
 
 ---
 

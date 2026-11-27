@@ -6,11 +6,13 @@
 ## 项目验收命令
 <!-- 示例：
 - 定点单测：`pytest tests/unit/test_xxx.py -q`
-- 全量测试（耗时较长，交由轻量 subagent 监控）：`npm test`
+- 全量测试 / 评测跑批（交由 `coder` 通道执行并回传 5–10 行摘要；禁止派只读 `research` 或主会话裸跑）：`npm test`
 -->
 
 ## 范围与禁区
 <!-- 示例：
 - 子代理禁止修改 `migrations/`、`package-lock.json` 与生产配置。
-- 涉及核心计费模块 `src/billing/` 的改动需升级至 `sonnet-agy` 或由主会话审查。
+- `*.snap`、`*snapshots*.json`、`package-lock.json` 等大快照文件禁止主会话裸 `git diff`，交由 `scout` / `coder` 摘要。
+- Git 约束：禁止 `git add -A` / `git add .`（必须按白名单路径精准暂存）；未经用户明确授权禁止 `git push`；严禁 `--force` / `git reset --hard`。
+- 涉及核心计费模块 `src/billing/` 的改动需升级至 `heavy` 或由主会话审查。
 -->

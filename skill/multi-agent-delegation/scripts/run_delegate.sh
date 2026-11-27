@@ -6,9 +6,9 @@ usage() {
 Usage: run_delegate.sh (--role <role> | --preset <preset>) --dir <workdir> --brief <file> --out <out.json> [options]
 
 Universal Roles (recommended, vendor-agnostic, customizable via config.env / profiles):
-  scout          Fast search, summary, full test/eval monitoring, log analysis
+  scout          Read-only code map, log/report root-cause & large diff summary (no stateful/networked tests)
   fast           Small chores, unit tests, small-to-medium deterministic edits
-  coder          Standard / multi-file implementation & test-verified bug fixes
+  coder          Unified Act channel: multi-file implementation, full test/eval runs, routine git wrap-up
   heavy          Escalation after 2-3 failed self-fix loops
   architect      High-risk architecture & trade-offs (read-only plan mode)
 

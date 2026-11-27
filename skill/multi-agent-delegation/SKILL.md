@@ -81,7 +81,7 @@ description: >-
 > - 细小单点改动由主会话直接完成，避免委派固定开销。
 > - 旧版 `--preset`（`hydrogen-low` / `hydrogen` / `glm` / `glm-opus` / `sonnet-agy` / `sonnet-cursor` / `opus-plan`）仍完整保留向下兼容。
 > - **AGY 原生子代理的 `Model` 只有四个别名**：`inherit`（主会话当前模型，如 Neon）、`flash_lite`（gemini-3.5-flash-lite，最便宜）、`flash`（Hydrogen 高思考档）、`pro`（Hydrogen 更高思考档）。`inherit` 由守卫 Hook 按策略改写或拦截；只读调研用 `TypeName="research"` 加 `flash_lite`。**原生 `flash` 子代理只接 `fast` 级的小活**：把简报塞给 `Model="flash"` 的 `self` 子代理只是换了档位，活仍然在 AGY 里、也没有 coder 的测试闭环，需要写简报的任务一律走 `coder`。
-> - **AGY Plan/Execute（Orchestrator）模式与 `coder` 交接**：规划阶段遇到多文件实现、新增多个测试或带测试闭环的 Bug 修复，通过 `exit_plan_mode` 交付「写简报到 `.runtime/` 或 `DELEGATE_SCRATCH_DIR` → 后台调 `run_delegate.sh --role coder`（`NotificationTimeoutSeconds` 设 900 以上）→ 独立验收」的编排步骤，而不是让执行模型在主会话逐文件 `edit_file` 与反复跑测；仅纯文档同步或 1–2 个文件数行级小改才由执行模型直接完成。
+> - **AGY Plan/Execute（Orchestrator）模式与 `coder` 交接**：规划阶段遇到多文件实现、新增多个测试或带测试闭环的 Bug 修复，通过 `exit_plan_mode` 交付「把简报与输出 JSON 默认写到 `<artifactDirectoryPath>/scratch/`（免工作区外写权限弹窗、不污染 `git status`，守卫自动放行）或 `DELEGATE_SCRATCH_DIR` → 后台调 `run_delegate.sh --role coder`（`NotificationTimeoutSeconds` 设 900 以上）→ 独立验收」的编排步骤，而不是让执行模型在主会话逐文件 `edit_file` 与反复跑测。单任务直接 `--dir .` 改当前工作区、靠 `git diff` 验收，仅并发多写任务才开 `git worktree`；首次在无 `.agents/delegation/config.env` 的非 Python 项目委派前，先检查并补齐项目级 `DELEGATE_DEFAULT_TEST_CMD`（如 `npm test,npm run,npx`、`pytest,python3`、`go test`、`cargo test`），避免 `coder` 遇 `permission_denials` 或因传 `--test-cmd` 触发审批弹窗。仅纯文档同步或 1–2 个文件数行级小改才由执行模型直接完成。
 > - **Neon 与 Hydrogen 吃的是同一份 AGY 配额**（实测两者同刻打空、同刻重置，Claude 系列另算）。把活交给 `flash`，省的是 Neon 的份额和主会话上下文，不是 AGY 总量；要把用量真正挪出 AGY，走 `coder` 通道（Claude Code + GLM 等）或 Cursor。
 > - **调研类子代理是最大的 token 出口**：简报里写明回执行数上限，要求先用 `rg` / `grep` 定位、再按行范围读取，不要逐个整文件通读；大型盘点拆分为 2–3 分钟内可完成的窄范围子代理（纯清单/搜索用 `flash_lite`，需推理用 `flash`），避免单个近 10 分钟的笼统调研。
 > - **保护订阅限额**：多轮试错、长程写码优先分流给高性价比 `coder`（如 Claude Code + 国产 Coding Plan），避免在限流较严的主订阅上跑长循环。
@@ -132,14 +132,15 @@ description: >-
 ## 4. 标准执行流程
 
 ### 步骤 1：准备隔离工作区
-- **Git 仓库（首选）**：为每个并发子任务创建独立 worktree：
+- **单任务（默认）**：直接用 `--dir .` 改当前工作区，验收时用 `git diff` 检查改动；只有并发多写任务才需要隔离。
+- **Git 仓库并发任务（首选）**：为每个并发子任务创建独立 worktree：
   ```bash
   git worktree add .trees/<task> -b task/<task>
   ```
 - **非 Git 目录**：拷贝到 `~/work/agy-scratch/<task>/`（或 `DELEGATE_SCRATCH_DIR` 指定目录；注意：AGY 禁止在 `/tmp` 下写文件，cwd 必须在 `$HOME` 下）。
 
 ### 步骤 2：撰写五段式任务简报
-将简报写入临时文件（例如 `~/work/agy-scratch/<task>-brief.md`）：
+将简报写入临时文件：在 AGY 内默认写到 `<artifactDirectoryPath>/scratch/`（免工作区外写权限弹窗、不污染 `git status`，守卫自动放行），也可用 `~/work/agy-scratch/<task>-brief.md` 或 `DELEGATE_SCRATCH_DIR`：
 
 ```markdown
 ## 目标
@@ -160,7 +161,7 @@ description: >-
 
 > 若目标角色绑定的是 `cursor`（受 allowlist 限制无法跑 shell），在“验收”段明确写：**“不要尝试运行命令，改完代码即交卷，验收由主会话执行。”**
 > 所有简报遵循**交付物优先（Deliverable-First）**：只要求确定性产物，不派发开放式闲聊任务。
-> **验收段写实**：验收命令用项目配置的测试命令（项目级 `DELEGATE_DEFAULT_TEST_CMD`，如 `pytest`、`npm test,npm run`，多个前缀用逗号分隔）。单测全绿是弱信号——涉及交互行为的改动，把项目自带的 eval / 冒烟也写进验收，否则回归要等用户手测才暴露。
+> **验收段写实**：验收命令用项目配置的测试命令（项目级 `DELEGATE_DEFAULT_TEST_CMD`，如 `pytest`、`npm test,npm run`，多个前缀用逗号分隔）。首次在无 `.agents/delegation/config.env` 的非 Python 项目委派前，先检查并补齐项目级 `DELEGATE_DEFAULT_TEST_CMD`（如 `npm test,npm run,npx`、`pytest,python3`、`go test`、`cargo test`），避免 `coder` 遇 `permission_denials` 或因传 `--test-cmd` 触发审批弹窗。单测全绿是弱信号——涉及交互行为的改动，把项目自带的 eval / 冒烟也写进验收，否则回归要等用户手测才暴露。
 
 ### 步骤 3：调用委派脚本执行
 使用封装脚本 [run_delegate.sh](./scripts/run_delegate.sh) 按角色派发（可同时后台并行跑多个独立目录）：
@@ -175,6 +176,8 @@ bash ~/.agents/skills/multi-agent-delegation/scripts/run_delegate.sh \
 ```
 
 > 可加 `--resolve-only` 预览该角色在当前项目下解析出的 `harness / model / endpoint / fallback`，确认无误再执行。
+>
+> **落盘位置**：在 AGY 内，简报与 `--out` 默认放 `<artifactDirectoryPath>/scratch/`（守卫自动放行，免工作区外写权限弹窗、不污染 `git status`）或 `DELEGATE_SCRATCH_DIR`；`--dir` 仍必须在工作区或 `DELEGATE_SCRATCH_DIR` 内。
 >
 > **在 AGY 主会话内调用**：写 `bash ~/.agents/skills/multi-agent-delegation/scripts/run_delegate.sh ...`。未开启 `DELEGATE_AUTO_ALLOW_DELEGATE` 时，AGY 会就「执行工作区外的脚本并绕过沙箱」弹一次权限确认——这是默认的安全行为，确认后继续即可；在 AGY 里不需要再套一层 `run_delegate.sh` 去起 Hydrogen：`fast` 级小活直接用原生 `invoke_subagent(TypeName="self", Model="flash")`（守卫为 `deny` 时改走 `--role coder`）。
 >
@@ -198,6 +201,6 @@ bash ~/.agents/skills/multi-agent-delegation/scripts/run_delegate.sh \
 - **严禁**在 `config.env` 中写入明文 API Key（仅通过 `*_API_KEY_ENV` 引用环境变量名）。
 - **严禁**子代理修改测试文件以掩盖代码问题（除非任务本身是编写/更新测试）。
 - **严禁**多个写任务共享同一个工作目录。
-- **`DELEGATE_AUTO_ALLOW_DELEGATE=1` 是一项长期授权**，只在你信任当前主会话时开启：它让规范形式的 `run_delegate.sh` 命令免权限确认并绕过 AGY 沙箱，而被委派的 Claude Code 可以在 `--dir` 内改文件、执行**配置里**的测试命令（`Bash(<test-cmd>:*)`）。守卫 Hook 只放行同时满足以下条件的命令，其余一律回到 AGY 默认权限流程：角色/预设在已知列表内；不带自定义 `--test-cmd`；`--dir` / `--brief` / `--out` 都在工作区或 `DELEGATE_SCRATCH_DIR` 内；不含 shell 元字符，也没有重复选项。
+- **`DELEGATE_AUTO_ALLOW_DELEGATE=1` 是一项长期授权**，只在你信任当前主会话时开启：它让规范形式的 `run_delegate.sh` 命令免权限确认并绕过 AGY 沙箱，而被委派的 Claude Code 可以在 `--dir` 内改文件、执行**配置里**的测试命令（`Bash(<test-cmd>:*)`）。守卫 Hook 只放行同时满足以下条件的命令，其余一律回到 AGY 默认权限流程：角色/预设在已知列表内；不带自定义 `--test-cmd`；`--dir` 在工作区或 `DELEGATE_SCRATCH_DIR` 内；`--brief` / `--out` / `--progress` 在工作区、`DELEGATE_SCRATCH_DIR` 或 `<artifactDirectoryPath>/scratch/` 内；不含 shell 元字符，也没有重复选项。
 - **守卫 Hook 出错时只会「不干预」**：任何异常都回答 `ask`（回到 AGY 默认权限流程），绝不因为崩溃而放行或拦截。
 - **合规边界**：CLI 委派仅限单用户在人工发起的当前工作流中按需调用，**严禁** 24/7 无人值守挂机循环或接入违规第三方代理。

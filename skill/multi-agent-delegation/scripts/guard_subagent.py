@@ -42,7 +42,6 @@ VALUE_OPTIONS = {
     "--effort", "--max-budget", "--timeout", "--resume", "--fallback", "--progress",
 }
 FLAG_OPTIONS = {"--keep-session", "--resolve-only"}
-PATH_OPTIONS = ("--dir", "--brief", "--out")
 ROLE_VALUES = {
     "scout", "fast", "coder", "heavy", "architect",
     "hydrogen-low", "hydrogen", "glm", "glm-opus", "sonnet-agy", "sonnet-cursor", "opus-plan",
@@ -135,12 +134,16 @@ def accepted_script_paths(script_path, home):
     return paths
 
 
-def is_canonical_delegation(command, settings, cwd, workspace_paths, home):
+def is_canonical_delegation(command, settings, cwd, workspace_paths, home, artifact_dir=None):
     """The command's options when it is exactly `bash <run_delegate.sh>` with known flags and
     in-workspace paths, otherwise None.
 
     A custom --test-cmd is not among the known flags on purpose: it is what grants the delegated
     Claude Code its shell permissions, so only the configured command may ever be used unattended.
+
+    Briefs and output reports may also live under AGY's per-conversation artifact scratch dir, which
+    keeps them out of `git status` and out of the permission prompt for writing outside the
+    workspace. --dir stays restricted to the workspace: that is where the delegated agent writes.
     """
     if any(char in SHELL_SYNTAX for char in command):
         return None
@@ -166,14 +169,17 @@ def is_canonical_delegation(command, settings, cwd, workspace_paths, home):
         else:
             return None
 
-    def inside_roots(text):
+    dir_roots = workspace_roots(settings, cwd, workspace_paths, home)
+    io_roots = dir_roots + artifact_scratch_roots(artifact_dir, home)
+
+    def inside_roots(text, roots):
         candidate = resolved_path(text, cwd, home)
-        return candidate is not None and any(candidate == root or root in candidate.parents for root in workspace_roots(settings, cwd, workspace_paths, home))
+        return candidate is not None and any(candidate == root or root in candidate.parents for root in roots)
 
     # A progress query reads two files next to the output path and nothing else, so on its own it
     # needs no role; mixed with a delegation it stops being a form that can be told apart.
     if "--progress" in options:
-        return options if set(options) == {"--progress"} and inside_roots(options["--progress"]) else None
+        return options if set(options) == {"--progress"} and inside_roots(options["--progress"], io_roots) else None
 
     if ("--role" in options) == ("--preset" in options):
         return None
@@ -181,10 +187,23 @@ def is_canonical_delegation(command, settings, cwd, workspace_paths, home):
         return None
     if "--dir" not in options:
         return None
-    for flag in PATH_OPTIONS:
-        if flag in options and not inside_roots(options[flag]):
+    if not inside_roots(options["--dir"], dir_roots):
+        return None
+    for flag in ("--brief", "--out"):
+        if flag in options and not inside_roots(options[flag], io_roots):
             return None
     return options
+
+
+def artifact_scratch_roots(artifact_dir, home):
+    """AGY's scratch dir for this conversation, where briefs and reports can be written without a
+    workspace escape. Empty when the payload carries no usable artifact directory."""
+    if not artifact_dir:
+        return []
+    resolved = resolved_path(artifact_dir, None, home)
+    if resolved is None:
+        return []
+    return [(resolved / "scratch").resolve()]
 
 
 def workspace_roots(settings, cwd, workspace_paths, home):
@@ -259,7 +278,10 @@ def decide(payload):
             cwd = payload.get("cwd")
             home = Path.home()
             if "run_delegate.sh" in command:
-                options = is_canonical_delegation(command, settings, cwd, workspace_paths, home)
+                options = is_canonical_delegation(
+                    command, settings, cwd, workspace_paths, home,
+                    artifact_dir=payload.get("artifactDirectoryPath"),
+                )
                 if options:
                     return {"decision": "allow", "overwrite": {"BypassSandbox": True}}
             elif is_canonical_config_read(command, settings, cwd, workspace_paths, home):

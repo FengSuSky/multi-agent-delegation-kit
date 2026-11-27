@@ -29,6 +29,8 @@ class HookTestCase(unittest.TestCase):
         self.hook_script = self.skill / "scripts" / "guard_subagent.py"
         self.workspace = self.home / "work" / "repo"
         (self.workspace / ".trees" / "fix").mkdir(parents=True)
+        self.artifact_dir = self.home / ".gemini" / "antigravity-cli" / "brain" / "a86eaacc"
+        (self.artifact_dir / "scratch").mkdir(parents=True)
         self.user_config = self.home / ".config" / "multi-agent-delegation" / "config.env"
         self.user_config.parent.mkdir(parents=True)
         self.user_config.write_text("", encoding="utf-8")
@@ -39,7 +41,7 @@ class HookTestCase(unittest.TestCase):
             "conversationId": "a86eaacc-3e1c-4a75-af41-e3da91aa1767",
             "workspacePaths": [str(self.workspace)],
             "transcriptPath": str(self.home / ".gemini" / "antigravity-cli" / "brain" / "a86eaacc" / "logs" / "transcript.jsonl"),
-            "artifactDirectoryPath": str(self.home / ".gemini" / "antigravity-cli" / "brain" / "a86eaacc"),
+            "artifactDirectoryPath": str(self.artifact_dir),
             "modelName": "gemini-4-neon",
             "lastUserInput": "ship it",
             "hookEventName": "PreToolUse",
@@ -65,12 +67,14 @@ class HookTestCase(unittest.TestCase):
 
     def delegation_command(self, *overrides, **options):
         workdir = options.pop("workdir", None)
+        brief = options.pop("brief", self.workspace / "brief.md")
+        out = options.pop("out", self.workspace / "out.json")
         parts = [
             "bash", "~/.agents/skills/multi-agent-delegation/scripts/run_delegate.sh",
             "--role", "coder",
             "--dir", str(workdir or self.workspace),
-            "--brief", str(self.workspace / "brief.md"),
-            "--out", str(self.workspace / "out.json"),
+            "--brief", str(brief),
+            "--out", str(out),
         ]
         parts.extend(overrides)
         for flag, value in options.items():
@@ -202,6 +206,42 @@ class DelegationCommandTest(HookTestCase):
     def test_refuses_a_progress_query_mixed_with_a_delegation_even_when_enabled(self):
         self.configure("DELEGATE_AUTO_ALLOW_DELEGATE=1")
         self.assertEqual(self.run_command(self.delegation_command("--progress", str(self.workspace / "o.json"))), ASK)
+
+    def test_auto_allows_brief_and_out_inside_artifact_scratch_when_enabled(self):
+        self.configure("DELEGATE_AUTO_ALLOW_DELEGATE=1")
+        scratch = self.artifact_dir / "scratch"
+        command = self.delegation_command(brief=scratch / "brief.md", out=scratch / "task" / "out.json")
+        self.assertEqual(self.run_command(command), AUTO_ALLOW)
+
+    def test_auto_allows_progress_query_inside_artifact_scratch_when_enabled(self):
+        self.configure("DELEGATE_AUTO_ALLOW_DELEGATE=1")
+        command = (
+            "bash ~/.agents/skills/multi-agent-delegation/scripts/run_delegate.sh --progress "
+            + str(self.artifact_dir / "scratch" / "out.json")
+        )
+        self.assertEqual(self.run_command(command), AUTO_ALLOW)
+
+    def test_refuses_brief_or_out_directly_in_artifact_dir_outside_scratch(self):
+        self.configure("DELEGATE_AUTO_ALLOW_DELEGATE=1")
+        scratch = self.artifact_dir / "scratch"
+        outside = (
+            self.artifact_dir / "brief.md",
+            self.artifact_dir / "scratch" / ".." / "brief.md",
+        )
+        for flag in ("brief", "out"):
+            for path in outside:
+                with self.subTest(flag=flag, path=str(path)):
+                    paths = {"brief": scratch / "brief.md", "out": scratch / "out.json"}
+                    paths[flag] = path
+                    self.assertEqual(self.run_command(self.delegation_command(**paths)), ASK)
+
+    def test_refuses_work_directory_inside_artifact_scratch_even_when_enabled(self):
+        self.configure("DELEGATE_AUTO_ALLOW_DELEGATE=1")
+        scratch = self.artifact_dir / "scratch"
+        command = self.delegation_command(
+            workdir=scratch / "task", brief=scratch / "brief.md", out=scratch / "out.json",
+        )
+        self.assertEqual(self.run_command(command), ASK)
 
     def test_accepts_optional_flags_and_a_worktree_inside_the_workspace(self):
         self.configure("DELEGATE_AUTO_ALLOW_DELEGATE=1")

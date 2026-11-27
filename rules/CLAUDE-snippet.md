@@ -11,7 +11,7 @@
   - **异构交叉 Review**：绝不让写代码的同源模型自审。
   - **配额兜底降级与多轮复用**：外部渠道无额度/报错时自动降级到兜底角色（默认 `fast`）并在本会话熔断故障通道；同主题多轮任务优先通过 `--keep-session` + `--resume <id>` 或原生 `send_message` 复用上下文与缓存。`run_delegate.sh` 失败时输出是 `status: "failed"` 的 JSON 报告，按 `attempts[].reason` 与 `next` 处理，不要原地重跑。注意 Neon 与 Hydrogen 共用同一份 AGY 配额，把活交给 `flash` 并不减少 AGY 总用量。`run_delegate.sh` 的输出文件只在结束时写入，运行期间是 0 字节属正常：`NotificationTimeoutSeconds` 设 900 以上，收到通知后用 `run_delegate.sh --progress <out.json>` 查到仍在 `running` 就继续等，没有失败报告时不要 kill 后自己接手；真要接手，先确认它不再显示 `running`。
 - 禁止使用 `--yolo`、`-f`、`--dangerously-skip-permissions`，除非明确授权；禁止在 `config.env` 写入明文 API Key。
-- 并行任务优先用 `git worktree` 隔离；非 git 仓库用独立目录 `~/work/agy-scratch/<task>/`。
+- **工作目录与简报落盘**：单任务直接 `--dir .` 改当前工作区、靠 `git diff` 验收；仅并发多写任务才开 `git worktree` 隔离（非 git 仓库用独立目录 `~/work/agy-scratch/<task>/`）。在 AGY 内，简报与输出 JSON 默认落盘到 `<artifactDirectoryPath>/scratch/`（免工作区外写权限弹窗、不污染 `git status`，守卫自动放行）或 `DELEGATE_SCRATCH_DIR`。首次在无 `.agents/delegation/config.env` 的非 Python 项目委派前，先检查并补齐项目级 `DELEGATE_DEFAULT_TEST_CMD`（如 `npm test,npm run,npx`、`pytest,python3`、`go test`、`cargo test`），避免 `coder` 遇 `permission_denials` 或因传 `--test-cmd` 触发审批弹窗。
 - 任务简报必须包含：目标、验收命令、允许改的文件、禁止事项（默认"禁止改测试"）、必要背景、汇报行数上限。
 - 验收清单：查 diff 范围是否越界 → 确认测试文件未改 → 主会话独立跑验收命令 → 逐行读 diff 防硬编码 → 检查 `is_error` / `permission_denials` / "被拒"，输出为失败报告时先看 `attempts[].reason`。
 - 完整流程与委派脚本见全局 Skill `~/.agents/skills/multi-agent-delegation/`。

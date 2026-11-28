@@ -178,6 +178,9 @@ it "reads the endpoint from Claude Code settings when the role has no base URL"
 mkdir -p "${HOME}/.claude"
 printf '{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:%s"}}\n' "${DEAD_PORT}" > "${HOME}/.claude/settings.json"
 : > "${XDG_CONFIG_HOME}/multi-agent-delegation/config.env"
+# An ANTHROPIC_BASE_URL inherited from the shell running the tests wins over settings.json; clear it so the file is the only source.
+only_proxy_env ""
+RUN_ENV+=("ANTHROPIC_BASE_URL=")
 run_delegate --role coder --fallback none
 assert_eq "exit status" "1" "$RUN_RC"
 assert_eq "claude is never launched" "" "$(claude_argv)"
@@ -290,11 +293,19 @@ agy_prompt() { # -> the prompt argument of the last agy call (everything after -
   return 0
 }
 
+allowed_tools_passed_to_claude() { # -> the value following --allowedTools
+  grep -A1 -x -- '--allowedTools' "${LOGS}/claude.argv" 2>/dev/null | tail -n 1
+}
+
 echo "test command prefixes"
 it "grants each prefix of a comma-separated test command instead of one broad one"
 : > "$USER_CFG_FILE"
 run_delegate --role coder --test-cmd "npm test,npm run" --fallback none
-assert_contains "claude gets one narrow rule per prefix" "Bash(npm test:*,npm run:*)" "$(claude_argv)"
+assert_contains "claude gets one narrow rule per prefix" "Bash(npm test:*),Bash(npm run:*)" "$(claude_argv)"
+
+it "passes the edit tools plus one rule per prefix, spaces included, as the whole --allowedTools value"
+run_delegate --role coder --test-cmd "pytest,uv,git status" --fallback none
+assert_eq "value passed to --allowedTools" "Read,Edit,Write,Bash(pytest:*),Bash(uv:*),Bash(git status:*)" "$(allowed_tools_passed_to_claude)"
 
 it "still grants a single test command as before"
 run_delegate --role coder --test-cmd pytest --fallback none
@@ -306,7 +317,7 @@ printf '%s\n' 'DELEGATE_DEFAULT_TEST_CMD=npm test,npm run,node --test,git status
 resolved_json="$(bash "$DELEGATE" --role coder --resolve-only --dir "$WORK")"
 assert_contains "resolve-only keeps the full whitelist" '"test_cmd": "npm test,npm run,node --test,git status,git diff,git log,git add,git commit"' "$resolved_json"
 run_delegate --role coder --fallback none
-assert_contains "claude gets each test and local git prefix" "Bash(npm test:*,npm run:*,node --test:*,git status:*,git diff:*,git log:*,git add:*,git commit:*)" "$(claude_argv)"
+assert_contains "claude gets each test and local git prefix" "Bash(npm test:*),Bash(npm run:*),Bash(node --test:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git add:*),Bash(git commit:*)" "$(claude_argv)"
 rm -rf "${WORK}/.agents"
 
 echo "headless plan mode"
@@ -471,5 +482,22 @@ assert_eq "exit status" "1" "$RUN_RC"
 assert_eq "agy fallback is never launched" "0" "$(call_count agy)"
 assert_eq "report status" "failed" "$(report status)"
 assert_contains "log explains why fallback stopped" "stopping without fallback" "$(run_log)"
+
+it "names the error list of a budget-stop result instead of the model warning on stderr"
+# The kit's stub has no mode for this shape of failure, so stand in for Claude Code and put the stub back.
+cat > "${FAKE_HOME}/bin/claude" <<'SH'
+#!/usr/bin/env bash
+# A budget stop as the real CLI reports it: the cause sits in `errors`, stderr only carries a warning.
+printf '%s\n' '{"type":"result","subtype":"error_max_budget_usd","is_error":true,"errors":["Reached maximum budget ($1)"]}'
+echo '[claude-code:unrecognized_model] falling back to the default model' >&2
+exit 1
+SH
+chmod +x "${FAKE_HOME}/bin/claude"
+run_delegate --role coder --fallback fast
+cp "${KIT_DIR}/tests/stubs/claude" "${FAKE_HOME}/bin/claude"
+assert_eq "exit status" "1" "$RUN_RC"
+assert_eq "agy fallback is never launched" "0" "$(call_count agy)"
+assert_contains "reason comes from the result's errors" "Reached maximum budget (\$1)" "$(report attempts 0 reason)"
+assert_not_contains "the stderr warning no longer stands in for the cause" "unrecognized_model" "$(report attempts 0 reason)"
 
 finish

@@ -235,7 +235,7 @@ is_budget_positive() {
 }
 
 # Claude Code only accepts a positive amount: `none` and `0` mean "no hard cap".
-BUDGET_RAW="${CLI_MAX_BUDGET:-${DELEGATE_DEFAULT_MAX_BUDGET:-1.00}}"
+BUDGET_RAW="${CLI_MAX_BUDGET:-${DELEGATE_DEFAULT_MAX_BUDGET:-none}}"
 MAX_BUDGET=""
 if [[ -z "$BUDGET_RAW" || "$BUDGET_RAW" =~ ^[Nn]one$ || "$BUDGET_RAW" =~ ^0+([.]0+)?$ ]]; then
   :
@@ -650,13 +650,13 @@ ${prompt}"
       local tool_rules=""
       local prefix
       for prefix in ${SPLIT_ITEMS[@]+"${SPLIT_ITEMS[@]}"}; do
-        tool_rules+="${tool_rules:+,}${prefix}:*"
+        tool_rules+="${tool_rules:+,}Bash(${prefix}:*)"
       done
       if [[ -z "$tool_rules" ]]; then
         echo "Error: the test command is empty; set --test-cmd or DELEGATE_DEFAULT_TEST_CMD." >&2
         return 2
       fi
-      local allowed_tools="Read,Edit,Write,Bash(${tool_rules})"
+      local allowed_tools="Read,Edit,Write,${tool_rules}"
       if [[ "$mode" == "plan" ]]; then
         perm_mode="plan"
         allowed_tools="Read,Glob,Grep"
@@ -785,9 +785,11 @@ except ValueError:
 if not isinstance(data, dict):
     data = None
 if data:
-    detail = " ".join(str(data.get(k, "")) for k in ("api_error", "error", "result", "response"))
-    error_text = " ".join(str(data.get(k, "")) for k in ("api_error", "error"))
-    result_text = " ".join(str(data.get(k, "")) for k in ("error", "result", "response", "subtype", "api_error_status"))
+    errs = data.get("errors")
+    errs_text = "; ".join(str(x) for x in errs if x) if isinstance(errs, list) else str(errs or "")
+    detail = " ".join(p for p in (errs_text, *(str(data.get(k, "")) for k in ("api_error", "error", "result", "response"))) if p)
+    error_text = " ".join(p for p in (errs_text, *(str(data.get(k, "")) for k in ("api_error", "error", "terminal_reason"))) if p)
+    result_text = " ".join(p for p in (errs_text, *(str(data.get(k, "")) for k in ("error", "result", "response", "subtype", "api_error_status"))) if p)
 else:
     detail = error_text = result_text = ""
 err_text = time_pat.sub("", read(err_path))

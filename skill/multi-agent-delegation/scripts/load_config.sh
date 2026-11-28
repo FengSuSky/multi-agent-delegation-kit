@@ -179,7 +179,7 @@ DEFAULTS = {
     "DELEGATE_DEFAULT_FALLBACK": "fast",
     "DELEGATE_DEFAULT_TEST_CMD": "python3",
     "DELEGATE_DEFAULT_EFFORT": "high",
-    "DELEGATE_DEFAULT_MAX_BUDGET": "1.00",
+    "DELEGATE_DEFAULT_MAX_BUDGET": "none",
     "DELEGATE_DEFAULT_TIMEOUT": "300s",
     # Preflight: seconds to wait for the endpoint (0 disables); optional command that brings a
     # loopback proxy or tunnel back when it is down.
